@@ -30,8 +30,8 @@ import org.slf4j.Logger;
 
 import java.nio.ByteBuffer;
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
-import java.util.concurrent.Future;
 import java.util.stream.Collectors;
 
 public class RedisOnlineRetriever implements OnlineRetriever {
@@ -97,18 +97,15 @@ public class RedisOnlineRetriever implements OnlineRetriever {
               retrieveFields.add(featureTableTsBytes);
             });
 
-    List<Future<Map<byte[], byte[]>>> futures =
+    List<CompletableFuture<Map<byte[], byte[]>>> futures =
         Lists.newArrayListWithExpectedSize(binaryRedisKeys.size());
 
     // Number of fields that controls whether to use hmget or hgetall was discovered empirically
     // Could be potentially tuned further
     if (retrieveFields.size() < HGETALL_NUMBER_OF_FIELDS_THRESHOLD) {
-      Long starTime=System.currentTimeMillis();
-      log.error("retrieveFields.size()  {}", retrieveFields.size());
       byte[][] retrieveFieldsByteArray = retrieveFields.toArray(new byte[0][]);
 
       for (byte[] binaryRedisKey : binaryRedisKeys) {
-        // Access redis keys and extract features
         futures.add(
             redisClientAdapter
                 .hmget(binaryRedisKey, retrieveFieldsByteArray)
@@ -119,26 +116,24 @@ public class RedisOnlineRetriever implements OnlineRetriever {
                             .collect(Collectors.toMap(KeyValue::getKey, KeyValue::getValue)))
                 .toCompletableFuture());
       }
-      Long end=System.currentTimeMillis();
-      log.error("total time {}",(end-starTime));
-
-
     } else {
       for (byte[] binaryRedisKey : binaryRedisKeys) {
-        futures.add(redisClientAdapter.hgetall(binaryRedisKey));
+        futures.add(redisClientAdapter.hgetall(binaryRedisKey).toCompletableFuture());
       }
     }
 
+    try {
+      CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).get();
+    } catch (InterruptedException | ExecutionException e) {
+      log.error("Exception occurred while fetching features from redis {}", e.getMessage(), e);
+      throw new RuntimeException("Unexpected error when pulling data from Redis");
+    }
+
     List<List<Feature>> results = Lists.newArrayListWithExpectedSize(futures.size());
-    for (Future<Map<byte[], byte[]>> f : futures) {
-      try {
-        results.add(
-            RedisHashDecoder.retrieveFeature(
-                f.get(), byteToFeatureIdxMap, featureReferences, timestampPrefix));
-      } catch (InterruptedException | ExecutionException e) {
-        log.error("Exception occurred while fetching features from redis {}",e.getMessage(),e);
-        throw new RuntimeException("Unexpected error when pulling data from Redis");
-      }
+    for (CompletableFuture<Map<byte[], byte[]>> f : futures) {
+      results.add(
+          RedisHashDecoder.retrieveFeature(
+              f.join(), byteToFeatureIdxMap, featureReferences, timestampPrefix));
     }
 
     return results;

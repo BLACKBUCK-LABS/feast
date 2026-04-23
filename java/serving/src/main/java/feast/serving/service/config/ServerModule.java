@@ -18,6 +18,7 @@ package feast.serving.service.config;
 
 import com.google.inject.AbstractModule;
 import com.google.inject.Provides;
+import com.newrelic.api.agent.NewRelic;
 import feast.serving.service.ServingServiceV2;
 import feast.serving.service.controller.HealthServiceController;
 import feast.serving.service.grpc.OnlineServingGrpcServiceV2;
@@ -45,11 +46,17 @@ public class ServerModule extends AbstractModule {
             TracingServerInterceptor tracingServerInterceptor,
             HealthGrpc.HealthImplBase healthImplBase) {
 
-        // Create a CachedThreadPool executor
-        ExecutorService executorService = Executors.newCachedThreadPool();
+        int coreThreads = Runtime.getRuntime().availableProcessors() * 2;
+        int maxThreads = coreThreads * 4;
+        ExecutorService executorService = new ThreadPoolExecutor(
+                coreThreads,
+                maxThreads,
+                60L, TimeUnit.SECONDS,
+                new LinkedBlockingQueue<>(2000),
+                new ThreadPoolExecutor.CallerRunsPolicy());
 
-        // Log details about the thread pool
         logThreadPoolDetails(executorService);
+        startThreadPoolReporter((ThreadPoolExecutor) executorService);
 
         ServerBuilder<?> serverBuilder =
                 ServerBuilder.forPort(applicationProperties.getGrpc().getServer().getPort()).executor(executorService);
@@ -85,6 +92,15 @@ public class ServerModule extends AbstractModule {
             Logger logger = LoggerFactory.getLogger(getClass());
             logger.warn("Executor is not a ThreadPoolExecutor, it's: {}", executorService.getClass().getName());
         }
+    }
+
+    private void startThreadPoolReporter(ThreadPoolExecutor tpe) {
+        ScheduledExecutorService reporter = Executors.newSingleThreadScheduledExecutor();
+        reporter.scheduleAtFixedRate(() -> {
+            NewRelic.recordMetric("Custom/ThreadPool/ActiveThreads", tpe.getActiveCount());
+            NewRelic.recordMetric("Custom/ThreadPool/QueueSize", tpe.getQueue().size());
+            NewRelic.recordMetric("Custom/ThreadPool/PoolSize", tpe.getPoolSize());
+        }, 0, 30, TimeUnit.SECONDS);
     }
 
     @Provides

@@ -20,6 +20,8 @@ import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.google.protobuf.Duration;
 import com.google.protobuf.Timestamp;
+import com.newrelic.api.agent.NewRelic;
+import com.newrelic.api.agent.Segment;
 import feast.proto.core.FeatureServiceProto;
 import feast.proto.serving.ServingAPIProto;
 import feast.proto.serving.ServingAPIProto.FeatureReferenceV2;
@@ -121,7 +123,9 @@ public class OnlineServingServiceV2 implements ServingServiceV2 {
       storageRetrievalSpan.setTag("features", retrievedFeatureReferences.size());
     }
 
+    Segment redisSegment = NewRelic.getAgent().getTransaction().startSegment("Redis/getOnlineFeatures");
     List<List<Feature>> features = retrieveFeatures(retrievedFeatureReferences, entityRows);
+    redisSegment.end();
 
     if (storageRetrievalSpan != null) {
       storageRetrievalSpan.finish();
@@ -130,6 +134,7 @@ public class OnlineServingServiceV2 implements ServingServiceV2 {
     Span postProcessingSpan =
         tracerOptional.map(tracer -> tracer.buildSpan("postProcessing").start()).orElse(null);
 
+    Segment buildSegment = NewRelic.getAgent().getTransaction().startSegment("ResponseBuilder");
     ServingAPIProto.GetOnlineFeaturesResponse.Builder responseBuilder =
         ServingAPIProto.GetOnlineFeaturesResponse.newBuilder();
 
@@ -182,6 +187,8 @@ public class OnlineServingServiceV2 implements ServingServiceV2 {
                         retrievedFeatureReferences.stream()
                             .map(FeatureUtil::getFeatureReference)
                             .collect(Collectors.toList()))));
+
+    buildSegment.end();
 
     if (postProcessingSpan != null) {
       postProcessingSpan.finish();
