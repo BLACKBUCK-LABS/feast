@@ -25,8 +25,12 @@ import feast.proto.core.RegistryProto;
 import feast.proto.serving.ServingAPIProto;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /*
  *
@@ -37,8 +41,15 @@ import java.util.concurrent.TimeUnit;
  *
  * */
 public class RegistryRepository {
+  private static final Logger log = LoggerFactory.getLogger(RegistryRepository.class);
+
   private Registry registry;
   private RegistryFile registryFile;
+
+  // Cache: feature view name -> sorted, comma-joined entity join keys
+  private final ConcurrentHashMap<String, String> featureViewJoinKeyCache = new ConcurrentHashMap<>();
+  private long joinKeyCacheHits = 0;
+  private long joinKeyCacheMisses = 0;
 
   public RegistryRepository(RegistryFile registryFile, int refreshIntervalSecs) {
     this.registryFile = registryFile;
@@ -51,6 +62,29 @@ public class RegistryRepository {
 
   public RegistryRepository(Registry registry) {
     this.registry = registry;
+  }
+
+  public String getJoinKeyGroupForFeatureView(String featureViewName) {
+    String cached = featureViewJoinKeyCache.get(featureViewName);
+    if (cached != null) {
+      joinKeyCacheHits++;
+      if (joinKeyCacheHits % 10000 == 0) {
+        log.info("JOIN_KEY_CACHE hits={} misses={} size={}",
+            joinKeyCacheHits, joinKeyCacheMisses, featureViewJoinKeyCache.size());
+      }
+      return cached;
+    }
+    joinKeyCacheMisses++;
+    String computed =
+        registry.getFeatureViewSpec(
+                ServingAPIProto.FeatureReferenceV2.newBuilder().setFeatureViewName(featureViewName).build())
+            .getEntitiesList().stream()
+                .map(registry::getEntityJoinKey)
+                .sorted()
+                .collect(Collectors.joining(","));
+    featureViewJoinKeyCache.put(featureViewName, computed);
+    log.info("JOIN_KEY_CACHE MISS view={} joinKey={}", featureViewName, computed);
+    return computed;
   }
 
   private void setupPeriodicalRefresh(int seconds) {
@@ -70,6 +104,7 @@ public class RegistryRepository {
     }
 
     this.registry = new Registry(registryProto.get());
+    this.featureViewJoinKeyCache.clear();
   }
 
   public FeatureViewProto.FeatureViewSpec getFeatureViewSpec(

@@ -22,18 +22,25 @@ import feast.proto.core.FeatureViewProto.FeatureView;
 import feast.proto.core.OnDemandFeatureViewProto.OnDemandFeatureView;
 import feast.proto.serving.ServingAPIProto;
 import feast.serving.exception.SpecRetrievalException;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
 import java.util.stream.Collectors;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class Registry {
+  private static final Logger log = LoggerFactory.getLogger(Registry.class);
+  private static long featureSpecLookupCount = 0;
+
   private final RegistryProto.Registry registry;
   private final Map<String, FeatureViewProto.FeatureViewSpec> featureViewNameToSpec;
   private Map<String, OnDemandFeatureViewProto.OnDemandFeatureViewSpec>
       onDemandFeatureViewNameToSpec;
   private final Map<String, FeatureServiceProto.FeatureServiceSpec> featureServiceNameToSpec;
   private final Map<String, String> entityNameToJoinKey;
+  private final Map<String, Map<String, FeatureProto.FeatureSpecV2>> featureViewNameToFeatureSpecMap;
 
   Registry(RegistryProto.Registry registry) {
     this.registry = registry;
@@ -67,6 +74,15 @@ public class Registry {
             .collect(
                 Collectors.toMap(
                     EntityProto.EntitySpecV2::getName, EntityProto.EntitySpecV2::getJoinKey));
+
+    this.featureViewNameToFeatureSpecMap = new HashMap<>(featureViewSpecs.size());
+    for (FeatureViewProto.FeatureViewSpec fvSpec : featureViewSpecs) {
+      Map<String, FeatureProto.FeatureSpecV2> featureNameMap = new HashMap<>(fvSpec.getFeaturesCount());
+      for (FeatureProto.FeatureSpecV2 fSpec : fvSpec.getFeaturesList()) {
+        featureNameMap.put(fSpec.getName(), fSpec);
+      }
+      featureViewNameToFeatureSpecMap.put(fvSpec.getName(), featureNameMap);
+    }
   }
 
   public RegistryProto.Registry getRegistry() {
@@ -85,13 +101,21 @@ public class Registry {
 
   public FeatureProto.FeatureSpecV2 getFeatureSpec(
       ServingAPIProto.FeatureReferenceV2 featureReference) {
-    final FeatureViewProto.FeatureViewSpec spec = this.getFeatureViewSpec(featureReference);
-    for (final FeatureProto.FeatureSpecV2 featureSpec : spec.getFeaturesList()) {
-      if (featureSpec.getName().equals(featureReference.getFeatureName())) {
-        return featureSpec;
+    featureSpecLookupCount++;
+    if (featureSpecLookupCount % 100000 == 0) {
+      log.info("FEATURE_SPEC_LOOKUP count={} view={} feature={}",
+          featureSpecLookupCount,
+          featureReference.getFeatureViewName(),
+          featureReference.getFeatureName());
+    }
+    Map<String, FeatureProto.FeatureSpecV2> featureNameMap =
+        featureViewNameToFeatureSpecMap.get(featureReference.getFeatureViewName());
+    if (featureNameMap != null) {
+      FeatureProto.FeatureSpecV2 spec = featureNameMap.get(featureReference.getFeatureName());
+      if (spec != null) {
+        return spec;
       }
     }
-
     throw new SpecRetrievalException(
         String.format(
             "Unable to find feature with name: %s in feature view: %s",

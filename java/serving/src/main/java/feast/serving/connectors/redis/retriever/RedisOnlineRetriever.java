@@ -32,6 +32,7 @@ import java.nio.ByteBuffer;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.stream.Collectors;
 
 public class RedisOnlineRetriever implements OnlineRetriever {
@@ -119,6 +120,15 @@ public class RedisOnlineRetriever implements OnlineRetriever {
     } else {
       for (byte[] binaryRedisKey : binaryRedisKeys) {
         futures.add(redisClientAdapter.hgetall(binaryRedisKey).toCompletableFuture());
+      }
+    }
+
+    // force all queued commands over the wire in a single TCP write instead of waiting for Netty
+    // auto-flush
+    if (binaryRedisKeys.size() > 1) {
+      redisClientAdapter.flushCommands();
+      if (ThreadLocalRandom.current().nextInt(1000) == 0) {
+        log.info("REDIS_FLUSH batched={} fields={}", binaryRedisKeys.size(), retrieveFields.size());
       }
     }
 

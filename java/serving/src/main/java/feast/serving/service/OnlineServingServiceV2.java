@@ -87,18 +87,17 @@ public class OnlineServingServiceV2 implements ServingServiceV2 {
   @Override
   public ServingAPIProto.GetOnlineFeaturesResponse getOnlineFeatures(
       ServingAPIProto.GetOnlineFeaturesRequest request) {
-    // Split all feature references into non-ODFV (e.g. batch and stream) references and ODFV.
     List<FeatureReferenceV2> allFeatureReferences = getFeaturesList(request);
-    List<FeatureReferenceV2> retrievedFeatureReferences =
-        allFeatureReferences.stream()
-            .filter(r -> !this.registryRepository.isOnDemandFeatureReference(r))
-            .collect(Collectors.toList());
+    List<FeatureReferenceV2> retrievedFeatureReferences = new ArrayList<>(allFeatureReferences.size());
+    List<FeatureReferenceV2> onDemandFeatureReferences = new ArrayList<>();
+    for (FeatureReferenceV2 ref : allFeatureReferences) {
+      if (this.registryRepository.isOnDemandFeatureReference(ref)) {
+        onDemandFeatureReferences.add(ref);
+      } else {
+        retrievedFeatureReferences.add(ref);
+      }
+    }
     int userRequestedFeaturesSize = retrievedFeatureReferences.size();
-
-    List<FeatureReferenceV2> onDemandFeatureReferences =
-        allFeatureReferences.stream()
-            .filter(r -> this.registryRepository.isOnDemandFeatureReference(r))
-            .collect(Collectors.toList());
 
     // ToDo (pyalex): refactor transformation service to delete unused left part of the returned
     // Pair from extractRequestDataFeatureNamesAndOnDemandFeatureSources.
@@ -291,16 +290,13 @@ public class OnlineServingServiceV2 implements ServingServiceV2 {
       features.add(featuresPerEntity);
     }
 
-    // Group feature references by join keys.
     Map<String, List<FeatureReferenceV2>> groupNameToFeatureReferencesMap =
         featureReferences.stream()
             .collect(
                 Collectors.groupingBy(
                     featureReference ->
-                        this.registryRepository.getEntitiesList(featureReference).stream()
-                            .map(this.registryRepository::getEntityJoinKey)
-                            .sorted()
-                            .collect(Collectors.joining(","))));
+                        this.registryRepository.getJoinKeyGroupForFeatureView(
+                            featureReference.getFeatureViewName())));
 
     // Retrieve features one group at a time.
     for (List<FeatureReferenceV2> featureReferencesPerGroup :
