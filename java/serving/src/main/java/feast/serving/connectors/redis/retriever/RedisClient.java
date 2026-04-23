@@ -44,6 +44,11 @@ public class RedisClient implements RedisClientAdapter {
     asyncCommands.flushCommands();
   }
 
+  @Override
+  public void setAutoFlushCommands(boolean autoFlush) {
+    asyncCommands.setAutoFlushCommands(autoFlush);
+  }
+
   private RedisClient(StatefulRedisConnection<byte[], byte[]> connection) {
     this.asyncCommands = connection.async();
   }

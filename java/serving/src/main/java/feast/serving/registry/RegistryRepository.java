@@ -25,8 +25,10 @@ import feast.proto.core.RegistryProto;
 import feast.proto.serving.ServingAPIProto;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
 
 /*
  *
@@ -40,6 +42,8 @@ public class RegistryRepository {
   private Registry registry;
   private RegistryFile registryFile;
 
+  private final ConcurrentHashMap<String, String> featureViewJoinKeyCache = new ConcurrentHashMap<>();
+
   public RegistryRepository(RegistryFile registryFile, int refreshIntervalSecs) {
     this.registryFile = registryFile;
     this.registry = new Registry(this.registryFile.getContent());
@@ -51,6 +55,18 @@ public class RegistryRepository {
 
   public RegistryRepository(Registry registry) {
     this.registry = registry;
+  }
+
+  public String getJoinKeyGroupForFeatureView(String featureViewName) {
+    return featureViewJoinKeyCache.computeIfAbsent(
+        featureViewName,
+        name ->
+            registry.getFeatureViewSpec(
+                    ServingAPIProto.FeatureReferenceV2.newBuilder().setFeatureViewName(name).build())
+                .getEntitiesList().stream()
+                    .map(registry::getEntityJoinKey)
+                    .sorted()
+                    .collect(Collectors.joining(",")));
   }
 
   private void setupPeriodicalRefresh(int seconds) {
@@ -70,6 +86,7 @@ public class RegistryRepository {
     }
 
     this.registry = new Registry(registryProto.get());
+    this.featureViewJoinKeyCache.clear();
   }
 
   public FeatureViewProto.FeatureViewSpec getFeatureViewSpec(

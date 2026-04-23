@@ -18,6 +18,7 @@ package feast.serving.service.config;
 
 import com.google.inject.AbstractModule;
 import com.google.inject.Provides;
+import com.newrelic.api.agent.NewRelic;
 import feast.serving.service.ServingServiceV2;
 import feast.serving.service.controller.HealthServiceController;
 import feast.serving.service.grpc.OnlineServingGrpcServiceV2;
@@ -26,32 +27,84 @@ import io.grpc.ServerBuilder;
 import io.grpc.health.v1.HealthGrpc;
 import io.grpc.protobuf.services.ProtoReflectionService;
 import io.opentracing.contrib.grpc.TracingServerInterceptor;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.util.concurrent.*;
 
 public class ServerModule extends AbstractModule {
 
-  @Override
-  protected void configure() {
-    bind(OnlineServingGrpcServiceV2.class);
-  }
+    @Override
+    protected void configure() {
+        bind(OnlineServingGrpcServiceV2.class);
+    }
 
-  @Provides
-  public Server provideGrpcServer(
-      ApplicationProperties applicationProperties,
-      OnlineServingGrpcServiceV2 onlineServingGrpcServiceV2,
-      TracingServerInterceptor tracingServerInterceptor,
-      HealthGrpc.HealthImplBase healthImplBase) {
-    ServerBuilder<?> serverBuilder =
-        ServerBuilder.forPort(applicationProperties.getGrpc().getServer().getPort());
-    serverBuilder
-        .addService(ProtoReflectionService.newInstance())
-        .addService(tracingServerInterceptor.intercept(onlineServingGrpcServiceV2))
-        .addService(healthImplBase);
+    @Provides
+    public Server provideGrpcServer(
+            ApplicationProperties applicationProperties,
+            OnlineServingGrpcServiceV2 onlineServingGrpcServiceV2,
+            TracingServerInterceptor tracingServerInterceptor,
+            HealthGrpc.HealthImplBase healthImplBase) {
 
-    return serverBuilder.build();
-  }
+        int coreThreads = Runtime.getRuntime().availableProcessors() * 2;
+        int maxThreads = coreThreads * 4;
+        ExecutorService executorService = new ThreadPoolExecutor(
+                coreThreads,
+                maxThreads,
+                60L, TimeUnit.SECONDS,
+                new LinkedBlockingQueue<>(2000),
+                new ThreadPoolExecutor.CallerRunsPolicy());
 
-  @Provides
-  public HealthGrpc.HealthImplBase healthService(ServingServiceV2 servingServiceV2) {
-    return new HealthServiceController(servingServiceV2);
-  }
+        logThreadPoolDetails(executorService);
+        startThreadPoolReporter((ThreadPoolExecutor) executorService);
+
+        ServerBuilder<?> serverBuilder =
+                ServerBuilder.forPort(applicationProperties.getGrpc().getServer().getPort()).executor(executorService);
+        serverBuilder
+                .addService(ProtoReflectionService.newInstance())
+                .addService(tracingServerInterceptor.intercept(onlineServingGrpcServiceV2))
+                .addService(healthImplBase);
+
+        return serverBuilder.build();
+    }
+
+    private void logThreadPoolDetails(ExecutorService executorService) {
+        if (executorService instanceof ThreadPoolExecutor) {
+            ThreadPoolExecutor threadPoolExecutor = (ThreadPoolExecutor) executorService;
+
+            // Log relevant details about the thread pool
+            Logger logger = LoggerFactory.getLogger(getClass());
+
+            int corePoolSize = threadPoolExecutor.getCorePoolSize();
+            int maximumPoolSize = threadPoolExecutor.getMaximumPoolSize();
+            long keepAliveTime = threadPoolExecutor.getKeepAliveTime(TimeUnit.SECONDS);
+
+            // Check if it's a CachedThreadPool (maximumPoolSize == Integer.MAX_VALUE means it's unbounded)
+            if (maximumPoolSize == Integer.MAX_VALUE) {
+                logger.info("Using CachedThreadPool with core pool size: {}, keep-alive time: {} seconds",
+                        corePoolSize, keepAliveTime);
+            } else {
+                logger.info("Using FixedThreadPool with core pool size: {}, max pool size: {}, keep-alive time: {} seconds",
+                        corePoolSize, maximumPoolSize, keepAliveTime);
+            }
+        } else {
+            // Log if it's not a thread pool executor
+            Logger logger = LoggerFactory.getLogger(getClass());
+            logger.warn("Executor is not a ThreadPoolExecutor, it's: {}", executorService.getClass().getName());
+        }
+    }
+
+    private void startThreadPoolReporter(ThreadPoolExecutor tpe) {
+        ScheduledExecutorService reporter = Executors.newSingleThreadScheduledExecutor();
+        reporter.scheduleAtFixedRate(() -> {
+            NewRelic.recordMetric("Custom/ThreadPool/ActiveThreads", tpe.getActiveCount());
+            NewRelic.recordMetric("Custom/ThreadPool/QueueSize", tpe.getQueue().size());
+            NewRelic.recordMetric("Custom/ThreadPool/PoolSize", tpe.getPoolSize());
+        }, 0, 30, TimeUnit.SECONDS);
+    }
+
+    @Provides
+    public HealthGrpc.HealthImplBase healthService(ServingServiceV2 servingServiceV2) {
+        return new HealthServiceController(servingServiceV2);
+    }
 }

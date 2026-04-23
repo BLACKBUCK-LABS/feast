@@ -46,6 +46,11 @@ public class RedisClusterClient implements RedisClientAdapter {
     asyncCommands.flushCommands();
   }
 
+  @Override
+  public void setAutoFlushCommands(boolean autoFlush) {
+    asyncCommands.setAutoFlushCommands(autoFlush);
+  }
+
   static class Builder {
     private final StatefulRedisClusterConnection<byte[], byte[]> connection;
 

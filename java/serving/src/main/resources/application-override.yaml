@@ -1,0 +1,26 @@
+feast:
+  project: "ltr_mo"
+  registry: "/var/www/feast/java/serving/src/main/resources/registry.pb"
+  activeStore: online_cluster
+  stores:
+    - name: online_cluster
+      type: REDIS_CLUSTER
+      config: # Store specific configuration.
+        connection_string: "marketplace-fs-mo-v1.slkos6.clustercfg.aps1.cache.amazonaws.com:6379"
+        read_from: MASTER
+        timeout: PT2S
+logging:
+  audit:
+    enabled: true
+    # Log level configuration for different components
+    logLevel:
+      root: INFO
+      feast.serving: DEBUG  # Detailed logs for serving component
+      feast.stores: TRACE  # Trace logs for store interaction, for more granular tracking
+      feast.utils: WARN  # Log warnings for utils-related components
+    logFile:
+      enabled: true
+      path: "/var/log/blackbuck/feast_serving.log"
+      maxSize: 10MB  # Size of the log file before it's rotated
+      maxFiles: 5  # Keep up to 5 rotated log files
+      rollingPolicy: DAILY  # Log rotation based on the day

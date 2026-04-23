@@ -1,6 +1,6 @@
 feast:
-  project: ""
-  registry: "prompt_dory/data/registry.db"
+  project: "feast_java_demo"
+  registry: "java/serving/src/main/resources/registry_new.pb"
   registryRefreshInterval: 0
 
   # Indicates the active store. Only a single store in the last can be active at one time. In the future this key
@@ -13,7 +13,7 @@ feast:
     - name: online # Name of the store (referenced by active_store)
       type: REDIS # Type of the store. REDIS, REDIS_CLUSTER are available options
       config:  # Store specific configuration. See
-        host: localhost
+        host: marketplace-fs-mo-v1.slkos6.clustercfg.aps1.cache.amazonaws.com
         port: 6379
       # Subscriptions indicate which feature sets needs to be retrieved and used to populate this store
     - name: online_cluster

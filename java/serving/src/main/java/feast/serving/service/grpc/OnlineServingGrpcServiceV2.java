@@ -16,6 +16,7 @@
  */
 package feast.serving.service.grpc;
 
+import com.newrelic.api.agent.NewRelic;
 import feast.proto.serving.ServingAPIProto;
 import feast.proto.serving.ServingServiceGrpc;
 import feast.serving.service.ServingServiceV2;
@@ -53,10 +54,17 @@ public class OnlineServingGrpcServiceV2 extends ServingServiceGrpc.ServingServic
       ServingAPIProto.GetOnlineFeaturesRequest request,
       StreamObserver<ServingAPIProto.GetOnlineFeaturesResponse> responseObserver) {
     try {
+      int entityCount = request.getEntitiesMap().isEmpty() ? 0
+          : request.getEntitiesMap().values().iterator().next().getValCount();
+      NewRelic.addCustomParameter("entity_count", entityCount);
+      NewRelic.addCustomParameter("feature_service", request.getFeatureService());
+      NewRelic.addCustomParameter("features_requested", request.getFeatures().getValCount());
+
       responseObserver.onNext(this.servingServiceV2.getOnlineFeatures(request));
       responseObserver.onCompleted();
     } catch (RuntimeException e) {
       log.warn("Failed to get Online Features", e);
+      NewRelic.noticeError(e);
       responseObserver.onError(
           Status.INTERNAL.withDescription(e.getMessage()).withCause(e).asRuntimeException());
     }

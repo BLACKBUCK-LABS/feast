@@ -24,14 +24,20 @@ import feast.serving.connectors.Feature;
 import feast.serving.connectors.OnlineRetriever;
 import feast.serving.connectors.redis.common.RedisHashDecoder;
 import feast.serving.connectors.redis.common.RedisKeyGenerator;
+import feast.serving.service.config.ServingServiceV2Module;
 import io.lettuce.core.KeyValue;
+import org.slf4j.Logger;
+
 import java.nio.ByteBuffer;
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
-import java.util.concurrent.Future;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.stream.Collectors;
 
 public class RedisOnlineRetriever implements OnlineRetriever {
+
+  private static final Logger log = org.slf4j.LoggerFactory.getLogger(RedisOnlineRetriever.class);
 
   private static final String timestampPrefix = "_ts";
   private final RedisClientAdapter redisClientAdapter;
@@ -92,7 +98,7 @@ public class RedisOnlineRetriever implements OnlineRetriever {
               retrieveFields.add(featureTableTsBytes);
             });
 
-    List<Future<Map<byte[], byte[]>>> futures =
+    List<CompletableFuture<Map<byte[], byte[]>>> futures =
         Lists.newArrayListWithExpectedSize(binaryRedisKeys.size());
 
     // Number of fields that controls whether to use hmget or hgetall was discovered empirically
@@ -101,7 +107,6 @@ public class RedisOnlineRetriever implements OnlineRetriever {
       byte[][] retrieveFieldsByteArray = retrieveFields.toArray(new byte[0][]);
 
       for (byte[] binaryRedisKey : binaryRedisKeys) {
-        // Access redis keys and extract features
         futures.add(
             redisClientAdapter
                 .hmget(binaryRedisKey, retrieveFieldsByteArray)
@@ -112,22 +117,33 @@ public class RedisOnlineRetriever implements OnlineRetriever {
                             .collect(Collectors.toMap(KeyValue::getKey, KeyValue::getValue)))
                 .toCompletableFuture());
       }
-
     } else {
       for (byte[] binaryRedisKey : binaryRedisKeys) {
-        futures.add(redisClientAdapter.hgetall(binaryRedisKey));
+        futures.add(redisClientAdapter.hgetall(binaryRedisKey).toCompletableFuture());
       }
     }
 
-    List<List<Feature>> results = Lists.newArrayListWithExpectedSize(futures.size());
-    for (Future<Map<byte[], byte[]>> f : futures) {
-      try {
-        results.add(
-            RedisHashDecoder.retrieveFeature(
-                f.get(), byteToFeatureIdxMap, featureReferences, timestampPrefix));
-      } catch (InterruptedException | ExecutionException e) {
-        throw new RuntimeException("Unexpected error when pulling data from Redis");
+    // force all queued commands over the wire in a single TCP write instead of waiting for Netty
+    // auto-flush
+    if (binaryRedisKeys.size() > 1) {
+      redisClientAdapter.flushCommands();
+      if (ThreadLocalRandom.current().nextInt(1000) == 0) {
+        log.info("REDIS_FLUSH batched={} fields={}", binaryRedisKeys.size(), retrieveFields.size());
       }
+    }
+
+    try {
+      CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).get();
+    } catch (InterruptedException | ExecutionException e) {
+      log.error("Exception occurred while fetching features from redis {}", e.getMessage(), e);
+      throw new RuntimeException("Unexpected error when pulling data from Redis");
+    }
+
+    List<List<Feature>> results = Lists.newArrayListWithExpectedSize(futures.size());
+    for (CompletableFuture<Map<byte[], byte[]>> f : futures) {
+      results.add(
+          RedisHashDecoder.retrieveFeature(
+              f.join(), byteToFeatureIdxMap, featureReferences, timestampPrefix));
     }
 
     return results;

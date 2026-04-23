@@ -20,6 +20,8 @@ import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.google.protobuf.Duration;
 import com.google.protobuf.Timestamp;
+import com.newrelic.api.agent.NewRelic;
+import com.newrelic.api.agent.Segment;
 import feast.proto.core.FeatureServiceProto;
 import feast.proto.serving.ServingAPIProto;
 import feast.proto.serving.ServingAPIProto.FeatureReferenceV2;
@@ -52,9 +54,10 @@ public class OnlineServingServiceV2 implements ServingServiceV2 {
   private static final Logger log = org.slf4j.LoggerFactory.getLogger(OnlineServingServiceV2.class);
   private final Optional<Tracer> tracerOptional;
   private final OnlineRetriever retriever;
-  private final RegistryRepository registryRepository;
   private final OnlineTransformationService onlineTransformationService;
   private final String project;
+
+  private final RegistryRepository registryRepository;
 
   public static final String DUMMY_ENTITY_ID = "__dummy_id";
   public static final String DUMMY_ENTITY_VAL = "";
@@ -84,18 +87,17 @@ public class OnlineServingServiceV2 implements ServingServiceV2 {
   @Override
   public ServingAPIProto.GetOnlineFeaturesResponse getOnlineFeatures(
       ServingAPIProto.GetOnlineFeaturesRequest request) {
-    // Split all feature references into non-ODFV (e.g. batch and stream) references and ODFV.
     List<FeatureReferenceV2> allFeatureReferences = getFeaturesList(request);
-    List<FeatureReferenceV2> retrievedFeatureReferences =
-        allFeatureReferences.stream()
-            .filter(r -> !this.registryRepository.isOnDemandFeatureReference(r))
-            .collect(Collectors.toList());
+    List<FeatureReferenceV2> retrievedFeatureReferences = new ArrayList<>(allFeatureReferences.size());
+    List<FeatureReferenceV2> onDemandFeatureReferences = new ArrayList<>();
+    for (FeatureReferenceV2 ref : allFeatureReferences) {
+      if (this.registryRepository.isOnDemandFeatureReference(ref)) {
+        onDemandFeatureReferences.add(ref);
+      } else {
+        retrievedFeatureReferences.add(ref);
+      }
+    }
     int userRequestedFeaturesSize = retrievedFeatureReferences.size();
-
-    List<FeatureReferenceV2> onDemandFeatureReferences =
-        allFeatureReferences.stream()
-            .filter(r -> this.registryRepository.isOnDemandFeatureReference(r))
-            .collect(Collectors.toList());
 
     // ToDo (pyalex): refactor transformation service to delete unused left part of the returned
     // Pair from extractRequestDataFeatureNamesAndOnDemandFeatureSources.
@@ -120,7 +122,9 @@ public class OnlineServingServiceV2 implements ServingServiceV2 {
       storageRetrievalSpan.setTag("features", retrievedFeatureReferences.size());
     }
 
+    Segment redisSegment = NewRelic.getAgent().getTransaction().startSegment("Redis/getOnlineFeatures");
     List<List<Feature>> features = retrieveFeatures(retrievedFeatureReferences, entityRows);
+    redisSegment.end();
 
     if (storageRetrievalSpan != null) {
       storageRetrievalSpan.finish();
@@ -129,6 +133,7 @@ public class OnlineServingServiceV2 implements ServingServiceV2 {
     Span postProcessingSpan =
         tracerOptional.map(tracer -> tracer.buildSpan("postProcessing").start()).orElse(null);
 
+    Segment buildSegment = NewRelic.getAgent().getTransaction().startSegment("ResponseBuilder");
     ServingAPIProto.GetOnlineFeaturesResponse.Builder responseBuilder =
         ServingAPIProto.GetOnlineFeaturesResponse.newBuilder();
 
@@ -181,6 +186,8 @@ public class OnlineServingServiceV2 implements ServingServiceV2 {
                         retrievedFeatureReferences.stream()
                             .map(FeatureUtil::getFeatureReference)
                             .collect(Collectors.toList()))));
+
+    buildSegment.end();
 
     if (postProcessingSpan != null) {
       postProcessingSpan.finish();
@@ -283,16 +290,13 @@ public class OnlineServingServiceV2 implements ServingServiceV2 {
       features.add(featuresPerEntity);
     }
 
-    // Group feature references by join keys.
     Map<String, List<FeatureReferenceV2>> groupNameToFeatureReferencesMap =
         featureReferences.stream()
             .collect(
                 Collectors.groupingBy(
                     featureReference ->
-                        this.registryRepository.getEntitiesList(featureReference).stream()
-                            .map(this.registryRepository::getEntityJoinKey)
-                            .sorted()
-                            .collect(Collectors.joining(","))));
+                        this.registryRepository.getJoinKeyGroupForFeatureView(
+                            featureReference.getFeatureViewName())));
 
     // Retrieve features one group at a time.
     for (List<FeatureReferenceV2> featureReferencesPerGroup :

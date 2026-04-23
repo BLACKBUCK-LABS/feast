@@ -21,7 +21,6 @@
     <name>Feast</name>
     <description>Feature Store for Machine Learning</description>
     <url>${github.url}</url>
-
     <groupId>dev.feast</groupId>
     <artifactId>feast-parent</artifactId>
     <version>${revision}</version>
@@ -52,7 +51,7 @@
         <!-- OpenCensus is used in grpc and Google's HTTP client libs in Cloud SDKs -->
         <opencensus.version>0.26.0</opencensus.version>
         <!-- Force log4j2 to 2.11+ to support objectMessageAsJsonObject -->
-        <log4jVersion>2.17.1</log4jVersion>
+        <log4jVersion>2.19.0</log4jVersion>
         <joda.time.version>2.9.9</joda.time.version>
         <jakarta.validation.api.version>2.0.2</jakarta.validation.api.version>
         <lombok.version>1.18.24</lombok.version>
@@ -250,13 +249,6 @@
                 </configuration>
                 <executions>
                   <!-- Move check to fail faster, but after compilation. Default is verify phase -->
-                  <execution>
-                      <id>spotless-check</id>
-                      <phase>process-test-classes</phase>
-                      <goals>
-                          <goal>check</goal>
-                      </goals>
-                  </execution>
               </executions>
             </plugin>
             <plugin>
@@ -424,37 +416,6 @@
                 </executions>
             </plugin>
             <!-- maven-gpg-plugin is used to sign Maven components. This is required when releasing libraries to Maven Central -->
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-gpg-plugin</artifactId>
-                <configuration>
-                    <skip>true</skip>
-                </configuration>
-                <version>1.6</version>
-                <executions>
-                    <execution>
-                        <id>sign-artifacts</id>
-                        <phase>verify</phase>
-                        <goals>
-                            <goal>sign</goal>
-                        </goals>
-                        <!--
-                        This configuration helps with performing GPG operations non-interactively.
-                        For example when releasing via continuous integration.
-                        It is assumed that the GPG command used is version 2.x.
-                        -->
-                        <configuration>
-                            <gpgArguments>
-                                <arg>--pinentry-mode</arg>
-                                <arg>loopback</arg>
-                            </gpgArguments>
-                            <!-- Setting to allow retrieval of GPG passphrase from ~/.m2/settings.xml, refer to https://maven.apache.org/plugins/maven-gpg-plugin/usage.html -->
-                            <!--suppress MavenModelInspection -->
-                            <passphrase>${gpg.passphrase}</passphrase>
-                        </configuration>
-                    </execution>
-                </executions>
-            </plugin>
         </plugins>
 
         <pluginManagement>

@@ -26,4 +26,6 @@ public interface RedisClientAdapter {
   RedisFuture<Map<byte[], byte[]>> hgetall(byte[] key);
 
   void flushCommands();
+
+  void setAutoFlushCommands(boolean autoFlush);
 }

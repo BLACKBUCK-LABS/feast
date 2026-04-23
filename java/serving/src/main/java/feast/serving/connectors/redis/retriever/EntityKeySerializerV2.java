@@ -19,17 +19,16 @@ package feast.serving.connectors.redis.retriever;
 import com.google.protobuf.ProtocolStringList;
 import feast.proto.storage.RedisProto;
 import feast.proto.types.ValueProto;
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
+import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
-import org.apache.commons.lang3.ArrayUtils;
 import org.apache.commons.lang3.tuple.Pair;
 
 // This is derived from
 // https://github.com/feast-dev/feast/blob/b1ccf8dd1535f721aee8bea937ee38feff80bec5/sdk/python/feast/infra/key_encoding_utils.py#L22
 // and must be kept up to date with any changes in that logic.
 public class EntityKeySerializerV2 implements EntityKeySerializer {
+
   private final int entityKeySerializationVersion;
 
   public EntityKeySerializerV2() {
@@ -45,19 +44,17 @@ public class EntityKeySerializerV2 implements EntityKeySerializer {
     final ProtocolStringList joinKeys = entityKey.getEntityNamesList();
     final List<ValueProto.Value> values = entityKey.getEntityValuesList();
 
-    assert joinKeys.size() == values.size();
-
-    final List<Byte> buffer = new ArrayList<>();
-
     final List<Pair<String, ValueProto.Value>> tuples = new ArrayList<>(joinKeys.size());
     for (int i = 0; i < joinKeys.size(); i++) {
       tuples.add(Pair.of(joinKeys.get(i), values.get(i)));
     }
     tuples.sort(Comparator.comparing(Pair::getLeft));
 
+    ByteArrayOutputStream out = new ByteArrayOutputStream();
+
     for (Pair<String, ValueProto.Value> pair : tuples) {
-      buffer.addAll(encodeInteger(ValueProto.ValueType.Enum.STRING.getNumber()));
-      buffer.addAll(encodeString(pair.getLeft()));
+      writeInteger(out, ValueProto.ValueType.Enum.STRING.getNumber());
+      writeString(out, pair.getLeft());
     }
 
     for (Pair<String, ValueProto.Value> pair : tuples) {
@@ -65,78 +62,63 @@ public class EntityKeySerializerV2 implements EntityKeySerializer {
       switch (val.getValCase()) {
         case STRING_VAL:
           String stringVal = val.getStringVal();
-
-          buffer.addAll(encodeInteger(ValueProto.ValueType.Enum.STRING.getNumber()));
-          buffer.addAll(encodeInteger(stringVal.length()));
-          buffer.addAll(encodeString(stringVal));
-
+          writeInteger(out, ValueProto.ValueType.Enum.STRING.getNumber());
+          writeInteger(out, stringVal.length());
+          writeString(out, stringVal);
           break;
         case BYTES_VAL:
           byte[] bytes = val.getBytesVal().toByteArray();
-
-          buffer.addAll(encodeInteger(ValueProto.ValueType.Enum.BYTES.getNumber()));
-          buffer.addAll(encodeInteger(bytes.length));
-          buffer.addAll(encodeBytes(bytes));
-
+          writeInteger(out, ValueProto.ValueType.Enum.BYTES.getNumber());
+          writeInteger(out, bytes.length);
+          writeBytes(out, bytes);
           break;
         case INT32_VAL:
-          buffer.addAll(encodeInteger(ValueProto.ValueType.Enum.INT32.getNumber()));
-          buffer.addAll(encodeInteger(Integer.BYTES));
-          buffer.addAll(encodeInteger(val.getInt32Val()));
-
+          writeInteger(out, ValueProto.ValueType.Enum.INT32.getNumber());
+          writeInteger(out, Integer.BYTES);
+          writeInteger(out, val.getInt32Val());
           break;
         case INT64_VAL:
-          buffer.addAll(encodeInteger(ValueProto.ValueType.Enum.INT64.getNumber()));
-          /* This is super dumb - but in https://github.com/feast-dev/feast/blob/dcae1606f53028ce5413567fb8b66f92cfef0f8e/sdk/python/feast/infra/key_encoding_utils.py#L9
-          we use `struct.pack("<l", v.int64_val)` to get the bytes of an int64 val. This actually extracts only 4 bytes,
-          instead of 8 bytes as you'd expect from to serialize an int64 value.
-          */
+          writeInteger(out, ValueProto.ValueType.Enum.INT64.getNumber());
           if (this.entityKeySerializationVersion <= 1) {
-            buffer.addAll(encodeInteger(Integer.BYTES));
-            buffer.addAll(encodeInteger(((Long) val.getInt64Val()).intValue()));
+            writeInteger(out, Integer.BYTES);
+            writeInteger(out, ((Long) val.getInt64Val()).intValue());
           } else {
-            buffer.addAll(encodeInteger(Long.BYTES));
-            buffer.addAll(encodeLong(((Long) val.getInt64Val())));
+            writeInteger(out, Long.BYTES);
+            writeLong(out, val.getInt64Val());
           }
-
           break;
         default:
           throw new RuntimeException("Unable to serialize Entity Key");
       }
     }
 
-    buffer.addAll(encodeString(entityKey.getProject()));
-
-    final byte[] bytes = new byte[buffer.size()];
-    for (int i = 0; i < buffer.size(); i++) {
-      bytes[i] = buffer.get(i);
-    }
-
-    return bytes;
+    writeString(out, entityKey.getProject());
+    return out.toByteArray();
   }
 
-  private List<Byte> encodeBytes(byte[] toByteArray) {
-    return Arrays.asList(ArrayUtils.toObject(toByteArray));
+  private void writeBytes(ByteArrayOutputStream out, byte[] bytes) {
+    out.write(bytes, 0, bytes.length);
   }
 
-  private List<Byte> encodeInteger(Integer value) {
-    ByteBuffer buffer = ByteBuffer.allocate(Integer.BYTES);
-    buffer.order(ByteOrder.LITTLE_ENDIAN);
-    buffer.putInt(value);
-
-    return Arrays.asList(ArrayUtils.toObject(buffer.array()));
+  private void writeInteger(ByteArrayOutputStream out, int value) {
+    out.write(value & 0xFF);
+    out.write((value >> 8) & 0xFF);
+    out.write((value >> 16) & 0xFF);
+    out.write((value >> 24) & 0xFF);
   }
 
-  private List<Byte> encodeLong(Long value) {
-    ByteBuffer buffer = ByteBuffer.allocate(Long.BYTES);
-    buffer.order(ByteOrder.LITTLE_ENDIAN);
-    buffer.putLong(value);
-
-    return Arrays.asList(ArrayUtils.toObject(buffer.array()));
+  private void writeLong(ByteArrayOutputStream out, long value) {
+    out.write((int) (value & 0xFF));
+    out.write((int) ((value >> 8) & 0xFF));
+    out.write((int) ((value >> 16) & 0xFF));
+    out.write((int) ((value >> 24) & 0xFF));
+    out.write((int) ((value >> 32) & 0xFF));
+    out.write((int) ((value >> 40) & 0xFF));
+    out.write((int) ((value >> 48) & 0xFF));
+    out.write((int) ((value >> 56) & 0xFF));
   }
 
-  private List<Byte> encodeString(String value) {
-    byte[] stringBytes = value.getBytes(StandardCharsets.UTF_8);
-    return encodeBytes(stringBytes);
+  private void writeString(ByteArrayOutputStream out, String value) {
+    writeBytes(out, value.getBytes(StandardCharsets.UTF_8));
   }
 }
