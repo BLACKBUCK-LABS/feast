@@ -26,9 +26,11 @@ import feast.serving.connectors.ProtoFeature;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
-import java.util.stream.Collectors;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class RedisHashDecoder {
+
+  private static final ConcurrentHashMap<String, byte[]> featureRefHashCache = new ConcurrentHashMap<>();
 
   /**
    * Converts all retrieved Redis Hash values based on EntityRows into {@link Feature}
@@ -43,20 +45,21 @@ public class RedisHashDecoder {
       Map<ByteBuffer, Integer> byteToFeatureIdxMap,
       List<ServingAPIProto.FeatureReferenceV2> featureReferences,
       String timestampPrefix) {
-    Map<String, Timestamp> featureTableTimestampMap =
-        redisHashValues.entrySet().stream()
-            .filter(e -> new String(e.getKey()).startsWith(timestampPrefix))
-            .collect(
-                Collectors.toMap(
-                    e -> new String(e.getKey()).substring(timestampPrefix.length() + 1),
-                    e -> {
-                      try {
-                        return Timestamp.parseFrom(e.getValue());
-                      } catch (InvalidProtocolBufferException ex) {
-                        throw new RuntimeException(
-                            "Couldn't parse timestamp proto while pulling data from Redis");
-                      }
-                    }));
+    byte[] timestampPrefixBytes = timestampPrefix.getBytes(StandardCharsets.UTF_8);
+    Map<String, Timestamp> featureTableTimestampMap = new HashMap<>();
+    for (Map.Entry<byte[], byte[]> e : redisHashValues.entrySet()) {
+      byte[] key = e.getKey();
+      if (startsWith(key, timestampPrefixBytes)) {
+        // skip prefix + ':' separator (1 byte)
+        String featureTable = new String(key, timestampPrefixBytes.length + 1,
+            key.length - timestampPrefixBytes.length - 1, StandardCharsets.UTF_8);
+        try {
+          featureTableTimestampMap.put(featureTable, Timestamp.parseFrom(e.getValue()));
+        } catch (InvalidProtocolBufferException ex) {
+          throw new RuntimeException("Couldn't parse timestamp proto while pulling data from Redis");
+        }
+      }
+    }
     List<Feature> results = new ArrayList<>(Collections.nCopies(featureReferences.size(), null));
 
     for (Map.Entry<byte[], byte[]> entry : redisHashValues.entrySet()) {
@@ -92,8 +95,16 @@ public class RedisHashDecoder {
       ServingAPIProto.FeatureReferenceV2 featureReference) {
     String delimitedFeatureReference =
         featureReference.getFeatureViewName() + ":" + featureReference.getFeatureName();
-    return Hashing.murmur3_32()
-        .hashString(delimitedFeatureReference, StandardCharsets.UTF_8)
-        .asBytes();
+    return featureRefHashCache.computeIfAbsent(
+        delimitedFeatureReference,
+        k -> Hashing.murmur3_32().hashString(k, StandardCharsets.UTF_8).asBytes());
+  }
+
+  private static boolean startsWith(byte[] array, byte[] prefix) {
+    if (array.length < prefix.length) return false;
+    for (int i = 0; i < prefix.length; i++) {
+      if (array[i] != prefix[i]) return false;
+    }
+    return true;
   }
 }

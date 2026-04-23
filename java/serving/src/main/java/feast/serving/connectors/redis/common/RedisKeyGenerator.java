@@ -16,43 +16,33 @@
  */
 package feast.serving.connectors.redis.common;
 
-import feast.proto.serving.ServingAPIProto;
 import feast.proto.storage.RedisProto;
 import feast.proto.types.ValueProto;
 import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.stream.Collectors;
 
 public class RedisKeyGenerator {
 
   public static List<RedisProto.RedisKeyV2> buildRedisKeys(
       String project, List<Map<String, ValueProto.Value>> entityRows) {
-    List<RedisProto.RedisKeyV2> redisKeys =
-        entityRows.stream()
-            .map(entityRow -> makeRedisKey(project, entityRow))
-            .collect(Collectors.toList());
+    if (entityRows.isEmpty()) return new ArrayList<>();
 
+    // sort entity names once — same keys in every row
+    List<String> sortedEntityNames = new ArrayList<>(entityRows.get(0).keySet());
+    sortedEntityNames.sort(String::compareTo);
+
+    List<RedisProto.RedisKeyV2> redisKeys = new ArrayList<>(entityRows.size());
+    for (Map<String, ValueProto.Value> entityRow : entityRows) {
+      redisKeys.add(makeRedisKey(project, entityRow, sortedEntityNames));
+    }
     return redisKeys;
   }
 
-  /**
-   * Create {@link RedisProto.RedisKeyV2}
-   *
-   * @param project Project where request for features was called from
-   * @param entityRow {@link ServingAPIProto.GetOnlineFeaturesRequestV2.EntityRow}
-   * @return {@link RedisProto.RedisKeyV2}
-   */
   private static RedisProto.RedisKeyV2 makeRedisKey(
-      String project, Map<String, ValueProto.Value> entityRow) {
+      String project, Map<String, ValueProto.Value> entityRow, List<String> sortedEntityNames) {
     RedisProto.RedisKeyV2.Builder builder = RedisProto.RedisKeyV2.newBuilder().setProject(project);
-    List<String> entityNames = new ArrayList<>(new HashSet<>(entityRow.keySet()));
-
-    // Sort entity names by alphabetical order
-    entityNames.sort(String::compareTo);
-
-    for (String entityName : entityNames) {
+    for (String entityName : sortedEntityNames) {
       builder.addEntityNames(entityName);
       builder.addEntityValues(entityRow.get(entityName));
     }
