@@ -27,13 +27,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
 import java.util.stream.Collectors;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 public class Registry {
-  private static final Logger log = LoggerFactory.getLogger(Registry.class);
-  private static long featureSpecLookupCount = 0;
-
   private final RegistryProto.Registry registry;
   private final Map<String, FeatureViewProto.FeatureViewSpec> featureViewNameToSpec;
   private Map<String, OnDemandFeatureViewProto.OnDemandFeatureViewSpec>
@@ -101,13 +96,6 @@ public class Registry {
 
   public FeatureProto.FeatureSpecV2 getFeatureSpec(
       ServingAPIProto.FeatureReferenceV2 featureReference) {
-    featureSpecLookupCount++;
-    if (featureSpecLookupCount % 100000 == 0) {
-      log.info("FEATURE_SPEC_LOOKUP count={} view={} feature={}",
-          featureSpecLookupCount,
-          featureReference.getFeatureViewName(),
-          featureReference.getFeatureName());
-    }
     Map<String, FeatureProto.FeatureSpecV2> featureNameMap =
         featureViewNameToFeatureSpecMap.get(featureReference.getFeatureViewName());
     if (featureNameMap != null) {
