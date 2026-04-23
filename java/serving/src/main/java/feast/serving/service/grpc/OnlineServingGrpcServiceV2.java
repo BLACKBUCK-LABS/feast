@@ -60,6 +60,8 @@ public class OnlineServingGrpcServiceV2 extends ServingServiceGrpc.ServingServic
       NewRelic.addCustomParameter("feature_service", request.getFeatureService());
       NewRelic.addCustomParameter("features_requested", request.getFeatures().getValCount());
 
+      log.info("getOnlineFeatures entities={} feature_service={}", entityCount, request.getFeatureService());
+
       responseObserver.onNext(this.servingServiceV2.getOnlineFeatures(request));
       responseObserver.onCompleted();
     } catch (RuntimeException e) {
