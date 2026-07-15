@@ -24,6 +24,15 @@ git fetch origin "${BRANCH}"
 git checkout "${BRANCH}"
 git reset --hard "origin/${BRANCH}"
 
+# SSM's non-interactive shell doesn't source the profile that sets JAVA_HOME interactively,
+# which the parent pom's javadoc plugin needs. Derive it from the java binary on PATH instead
+# of hardcoding a version-specific path.
+if [ -z "\${JAVA_HOME:-}" ]; then
+  JAVA_BIN="\$(readlink -f "\$(command -v java)")"
+  export JAVA_HOME="\${JAVA_BIN%/bin/java}"
+fi
+echo "JAVA_HOME=\${JAVA_HOME}"
+
 # System mvn is 3.3.9 here, but the enforcer plugin (maven-enforcer-plugin) requires >=3.6.
 # apache-maven-3.8.7-bin.tar.gz sits next to the repo for exactly that reason - unpack once if
 # needed, then use it explicitly instead of relying on PATH.
