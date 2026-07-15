@@ -100,7 +100,11 @@
     </dependency>
 
     <!-- All logging goes through Log4j2: slf4j-api is the facade every call site codes
-         against, log4j-slf4j2-impl bridges it to the log4j2.xml-configured pipeline below.
+         against, log4j-slf4j-impl bridges it to the log4j2.xml-configured pipeline below.
+         The parent BOM pins slf4j-api to 1.7.30 (pre-2.0 StaticLoggerBinder lookup), so this
+         must be log4j-slf4j-impl, NOT log4j-slf4j2-impl (that bridge targets the 2.x
+         SLF4JServiceProvider SPI, which doesn't exist in 1.7.x - it silently fails to
+         register and SLF4J falls back to the no-op logger).
          Do not add slf4j-simple/logback here - a second SLF4J binding on the classpath
          silently wins for some loggers and bypasses log4j2.xml's rotation/format entirely. -->
     <dependency>
@@ -110,7 +114,7 @@
 
     <dependency>
       <groupId>org.apache.logging.log4j</groupId>
-      <artifactId>log4j-slf4j2-impl</artifactId>
+      <artifactId>log4j-slf4j-impl</artifactId>
       <version>${log4jVersion}</version>
     </dependency>
 
