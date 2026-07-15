@@ -237,7 +237,7 @@ public class OnlineTransformationService implements TransformationService {
         responseBuilder.getMetadataBuilder().getFeatureNamesBuilder().addVal(fullFeatureName);
       }
     } catch (IOException e) {
-      log.info(e.toString());
+      log.warn("Unable to correctly process transform features response", e);
       throw Status.INTERNAL
           .withDescription("Unable to correctly process transform features response: " + e)
           .asRuntimeException();
@@ -312,7 +312,7 @@ public class OnlineTransformationService implements TransformationService {
       writer.writeBatch();
       writer.end();
     } catch (IOException e) {
-      log.info(e.toString());
+      log.warn("ArrowFileWriter could not write properly", e);
       throw Status.INTERNAL
           .withDescription("ArrowFileWriter could not write properly; failed with error: " + e)
           .asRuntimeException();

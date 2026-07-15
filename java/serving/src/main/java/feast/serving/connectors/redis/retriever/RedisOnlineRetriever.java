@@ -128,7 +128,7 @@ public class RedisOnlineRetriever implements OnlineRetriever {
     if (binaryRedisKeys.size() > 1) {
       redisClientAdapter.flushCommands();
       if (ThreadLocalRandom.current().nextInt(1000) == 0) {
-        log.info("REDIS_FLUSH batched={} fields={}", binaryRedisKeys.size(), retrieveFields.size());
+        log.debug("REDIS_FLUSH batched={} fields={}", binaryRedisKeys.size(), retrieveFields.size());
       }
     }
 

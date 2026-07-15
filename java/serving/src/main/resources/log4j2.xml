@@ -1,55 +1,54 @@
 <?xml version="1.0" encoding="UTF-8"?>
-
-
-<Configuration status="trace">
+<Configuration status="warn">
     <Properties>
         <Property name="basePath">/var/log/blackbuck</Property>
-        <Property name="LOG_PATTERN">
-            %d{yyyy-MM-dd HH:mm:ss.SSS} %5p ${hostName} --- [%15.15t] %-40.40c{1.} : %m%n%ex
-        </Property>
         <Property name="JSON_LOG_PATTERN">
-            {"time":"%d{yyyy-MM-dd'T'HH:mm:ssXXX}","hostname":"${hostName}","severity":"%p","message":%m}%n%ex
+            {"time":"%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX}","level":"%p","thread":"%t","logger":"%c{1.}","message":"%enc{%m}{JSON}"}%n%ex{full}{separator(|)}%n
         </Property>
     </Properties>
     <Appenders>
-        <Console name="ConsoleAppender" target="SYSTEM_OUT" follow="true">
-            <MarkerFilter marker="AUDIT_MARK" onMatch="DENY" onMismatch="ACCEPT"/>
-            <PatternLayout pattern="${LOG_PATTERN}"/>
-        </Console>
-        <Console name="JSONAppender" target="SYSTEM_OUT" follow="true">
-            <MarkerFilter marker="AUDIT_MARK" onMatch="ACCEPT" onMismatch="DENY"/>
+        <!-- App logs and errors both land here as one JSON-per-line stream; error-only
+             view is a jq/grep filter on level, not a second file, so nothing needs a
+             second rotation policy to stay in sync. -->
+        <RollingFile name="appLog"
+                     fileName="${basePath}/feast-serving.log"
+                     filePattern="${basePath}/archive/feast-serving-%d{yyyy-MM-dd}-%i.log.gz">
             <PatternLayout pattern="${JSON_LOG_PATTERN}"/>
-        </Console>
-        <RollingFile name="fileLogger"
-                     fileName="${basePath}/app.log"
-                     filePattern="${basePath}/app-%d{yyyy-MM-dd}.log">
-            <PatternLayout>
-                <pattern>[%-5level] %d{yyyy-MM-dd HH:mm:ss.SSS} [%t] %c{1} - %msg%n
-                </pattern>
-            </PatternLayout>
             <Policies>
-                <TimeBasedTriggeringPolicy interval="1" modulate="true" />
-                <SizeBasedTriggeringPolicy size="10MB" />
+                <TimeBasedTriggeringPolicy interval="1" modulate="true"/>
+                <SizeBasedTriggeringPolicy size="100MB"/>
             </Policies>
-            <!-- Max 10 files will be created everyday -->
-            <DefaultRolloverStrategy max="10">
-                <Delete basePath="${basePathr}" maxDepth="10">
-                    <!-- Delete all files older than 30 days -->
-                    <IfLastModified age="30d" />
+            <DefaultRolloverStrategy max="20">
+                <Delete basePath="${basePath}/archive" maxDepth="1">
+                    <IfFileName glob="feast-serving-*.log.gz"/>
+                    <IfLastModified age="14d"/>
+                    <IfAny>
+                        <IfAccumulatedFileSize exceeds="5GB"/>
+                        <IfLastModified age="14d"/>
+                    </IfAny>
                 </Delete>
             </DefaultRolloverStrategy>
         </RollingFile>
+
+        <!-- stdout mirror so `docker logs`/systemd journal capture the same stream during
+             local runs and incident debugging, without needing shell access to the box. -->
+        <Console name="console" target="SYSTEM_OUT">
+            <PatternLayout pattern="${JSON_LOG_PATTERN}"/>
+        </Console>
     </Appenders>
     <Loggers>
-      <Logger name="feast.common" level="info" additivity="false">
-<!--        <AppenderRef ref="ConsoleAppender"/>-->
-        <AppenderRef ref="JSONAppender"/>
-          <AppenderRef ref="fileLogger"/>
-      </Logger>
-      <Root level="info">
-<!--        <AppenderRef ref="ConsoleAppender"/>-->
-        <AppenderRef ref="JSONAppender"/>
-          <AppenderRef ref="fileLogger"/>
-      </Root>
+        <!-- Third-party libraries at info are pure noise at our volume; only surface their
+             warnings and above. Bump back to debug per-logger when chasing a specific issue. -->
+        <Logger name="io.netty" level="warn"/>
+        <Logger name="io.grpc" level="warn"/>
+        <Logger name="io.grpc.netty" level="warn"/>
+        <Logger name="io.lettuce" level="warn"/>
+        <Logger name="org.apache.zookeeper" level="warn"/>
+        <Logger name="org.apache.kafka" level="warn"/>
+
+        <Root level="info">
+            <AppenderRef ref="appLog"/>
+            <AppenderRef ref="console"/>
+        </Root>
     </Loggers>
 </Configuration>

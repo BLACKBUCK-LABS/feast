@@ -99,16 +99,19 @@
       <version>5.0.1</version>
     </dependency>
 
-    <!-- TODO: SLF4J is being used via Lombok, but also jog4j - pick one -->
+    <!-- All logging goes through Log4j2: slf4j-api is the facade every call site codes
+         against, log4j-slf4j2-impl bridges it to the log4j2.xml-configured pipeline below.
+         Do not add slf4j-simple/logback here - a second SLF4J binding on the classpath
+         silently wins for some loggers and bypasses log4j2.xml's rotation/format entirely. -->
     <dependency>
       <groupId>org.slf4j</groupId>
       <artifactId>slf4j-api</artifactId>
     </dependency>
 
     <dependency>
-      <groupId>org.slf4j</groupId>
-      <artifactId>slf4j-simple</artifactId>
-      <version>1.7.30</version>
+      <groupId>org.apache.logging.log4j</groupId>
+      <artifactId>log4j-slf4j2-impl</artifactId>
+      <version>${log4jVersion}</version>
     </dependency>
 
     <dependency>

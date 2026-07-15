@@ -44,6 +44,13 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 import org.apache.commons.lang3.tuple.Pair;
 import org.slf4j.Logger;
@@ -63,6 +70,28 @@ public class OnlineServingServiceV2 implements ServingServiceV2 {
   public static final String DUMMY_ENTITY_VAL = "";
   public static final ValueProto.Value DUMMY_ENTITY_VALUE =
       ValueProto.Value.newBuilder().setStringVal(DUMMY_ENTITY_VAL).build();
+
+  // Fans out the per-join-key-group Redis fetches in retrieveFeatures() so N groups take
+  // max(latency) instead of sum(latency). Separate from the gRPC dispatch executor in
+  // ServerModule: reusing that pool would let this work compete with RPC dispatch under
+  // CallerRunsPolicy and starve request intake during a load spike.
+  private static final ExecutorService fetchExecutor =
+      new ThreadPoolExecutor(
+          Runtime.getRuntime().availableProcessors() * 2,
+          Runtime.getRuntime().availableProcessors() * 8,
+          60L,
+          TimeUnit.SECONDS,
+          new LinkedBlockingQueue<>(2000),
+          new ThreadFactory() {
+            private final AtomicInteger count = new AtomicInteger();
+
+            @Override
+            public Thread newThread(Runnable r) {
+              Thread thread = new Thread(r, "feature-group-fetch-" + count.incrementAndGet());
+              thread.setDaemon(true);
+              return thread;
+            }
+          });
 
   public OnlineServingServiceV2(
       OnlineRetriever retriever,
@@ -122,9 +151,11 @@ public class OnlineServingServiceV2 implements ServingServiceV2 {
       storageRetrievalSpan.setTag("features", retrievedFeatureReferences.size());
     }
 
+    long redisStartNs = System.nanoTime();
     Segment redisSegment = NewRelic.getAgent().getTransaction().startSegment("Redis/getOnlineFeatures");
     List<List<Feature>> features = retrieveFeatures(retrievedFeatureReferences, entityRows);
     redisSegment.end();
+    long redisMs = (System.nanoTime() - redisStartNs) / 1_000_000;
 
     if (storageRetrievalSpan != null) {
       storageRetrievalSpan.finish();
@@ -140,6 +171,9 @@ public class OnlineServingServiceV2 implements ServingServiceV2 {
     Timestamp now = Timestamp.newBuilder().setSeconds(System.currentTimeMillis() / 1000).build();
     Timestamp nullTimestamp = Timestamp.newBuilder().build();
     ValueProto.Value nullValue = ValueProto.Value.newBuilder().build();
+
+    int totalNotFound = 0;
+    int totalStale = 0;
 
     for (int featureIdx = 0; featureIdx < userRequestedFeaturesSize; featureIdx++) {
       FeatureReferenceV2 featureReference = retrievedFeatureReferences.get(featureIdx);
@@ -158,6 +192,7 @@ public class OnlineServingServiceV2 implements ServingServiceV2 {
           vectorBuilder.addValues(nullValue);
           vectorBuilder.addStatuses(FieldStatus.NOT_FOUND);
           vectorBuilder.addEventTimestamps(nullTimestamp);
+          totalNotFound++;
           continue;
         }
 
@@ -166,13 +201,16 @@ public class OnlineServingServiceV2 implements ServingServiceV2 {
           vectorBuilder.addValues(nullValue);
           vectorBuilder.addStatuses(FieldStatus.NOT_FOUND);
           vectorBuilder.addEventTimestamps(nullTimestamp);
+          totalNotFound++;
           continue;
         }
 
+        FieldStatus status = getFeatureStatus(featureValue, checkOutsideMaxAge(feature, now, maxAge));
         vectorBuilder.addValues(featureValue);
-        vectorBuilder.addStatuses(
-            getFeatureStatus(featureValue, checkOutsideMaxAge(feature, now, maxAge)));
+        vectorBuilder.addStatuses(status);
         vectorBuilder.addEventTimestamps(feature.getEventTimestamp());
+        if (status == FieldStatus.NOT_FOUND) totalNotFound++;
+        else if (status == FieldStatus.OUTSIDE_MAX_AGE) totalStale++;
       }
 
       populateCountMetrics(featureReference, vectorBuilder);
@@ -188,6 +226,13 @@ public class OnlineServingServiceV2 implements ServingServiceV2 {
                             .collect(Collectors.toList()))));
 
     buildSegment.end();
+
+    long distinctFvCount = retrievedFeatureReferences.stream()
+        .map(FeatureReferenceV2::getFeatureViewName).distinct().count();
+    NewRelic.addCustomParameter("not_found_count", totalNotFound);
+    NewRelic.addCustomParameter("stale_count", totalStale);
+    NewRelic.addCustomParameter("redis_ms", redisMs);
+    NewRelic.addCustomParameter("feature_view_count", distinctFvCount);
 
     if (postProcessingSpan != null) {
       postProcessingSpan.finish();
@@ -298,31 +343,22 @@ public class OnlineServingServiceV2 implements ServingServiceV2 {
                         this.registryRepository.getJoinKeyGroupForFeatureView(
                             featureReference.getFeatureViewName())));
 
-    // Retrieve features one group at a time.
+    // Fetch all join-key groups concurrently instead of one at a time: each group's Redis
+    // round-trip is otherwise blocking, so N groups means N sequential round-trips on this
+    // thread. Fan out to fetchExecutor and join once all groups have returned.
+    List<CompletableFuture<GroupFetchResult>> groupFutures =
+        new ArrayList<>(groupNameToFeatureReferencesMap.size());
     for (List<FeatureReferenceV2> featureReferencesPerGroup :
         groupNameToFeatureReferencesMap.values()) {
-      List<String> entityNames =
-          this.registryRepository.getEntitiesList(featureReferencesPerGroup.get(0));
-      List<Map<String, ValueProto.Value>> entityRowsPerGroup = new ArrayList<>(entityRows.size());
-      for (Map<String, ValueProto.Value> entityRow : entityRows) {
-        Map<String, ValueProto.Value> entityRowPerGroup = new HashMap<>();
-        entityNames.stream()
-            .map(this.registryRepository::getEntityJoinKey)
-            .forEach(
-                joinKey -> {
-                  if (joinKey.equals(DUMMY_ENTITY_ID)) {
-                    entityRowPerGroup.put(joinKey, DUMMY_ENTITY_VALUE);
-                  } else {
-                    ValueProto.Value value = entityRow.get(joinKey);
-                    if (value != null) {
-                      entityRowPerGroup.put(joinKey, value);
-                    }
-                  }
-                });
-        entityRowsPerGroup.add(entityRowPerGroup);
-      }
-      List<List<Feature>> featuresPerGroup =
-          retriever.getOnlineFeatures(entityRowsPerGroup, featureReferencesPerGroup, entityNames);
+      groupFutures.add(
+          CompletableFuture.supplyAsync(
+              () -> fetchGroup(featureReferencesPerGroup, entityRows), fetchExecutor));
+    }
+
+    for (CompletableFuture<GroupFetchResult> groupFuture : groupFutures) {
+      GroupFetchResult result = groupFuture.join();
+      List<List<Feature>> featuresPerGroup = result.featuresPerGroup;
+      List<FeatureReferenceV2> featureReferencesPerGroup = result.featureReferencesPerGroup;
       for (int i = 0; i < featuresPerGroup.size(); i++) {
         for (int j = 0; j < featureReferencesPerGroup.size(); j++) {
           int k = featureReferenceToIndexMap.get(featureReferencesPerGroup.get(j));
@@ -332,6 +368,46 @@ public class OnlineServingServiceV2 implements ServingServiceV2 {
     }
 
     return features;
+  }
+
+  /** Result of fetching a single join-key group, carrying its own reference list back for merge. */
+  private static final class GroupFetchResult {
+    private final List<FeatureReferenceV2> featureReferencesPerGroup;
+    private final List<List<Feature>> featuresPerGroup;
+
+    private GroupFetchResult(
+        List<FeatureReferenceV2> featureReferencesPerGroup, List<List<Feature>> featuresPerGroup) {
+      this.featureReferencesPerGroup = featureReferencesPerGroup;
+      this.featuresPerGroup = featuresPerGroup;
+    }
+  }
+
+  private GroupFetchResult fetchGroup(
+      List<FeatureReferenceV2> featureReferencesPerGroup,
+      List<Map<String, ValueProto.Value>> entityRows) {
+    List<String> entityNames =
+        this.registryRepository.getEntitiesList(featureReferencesPerGroup.get(0));
+    List<Map<String, ValueProto.Value>> entityRowsPerGroup = new ArrayList<>(entityRows.size());
+    for (Map<String, ValueProto.Value> entityRow : entityRows) {
+      Map<String, ValueProto.Value> entityRowPerGroup = new HashMap<>();
+      entityNames.stream()
+          .map(this.registryRepository::getEntityJoinKey)
+          .forEach(
+              joinKey -> {
+                if (joinKey.equals(DUMMY_ENTITY_ID)) {
+                  entityRowPerGroup.put(joinKey, DUMMY_ENTITY_VALUE);
+                } else {
+                  ValueProto.Value value = entityRow.get(joinKey);
+                  if (value != null) {
+                    entityRowPerGroup.put(joinKey, value);
+                  }
+                }
+              });
+      entityRowsPerGroup.add(entityRowPerGroup);
+    }
+    List<List<Feature>> featuresPerGroup =
+        retriever.getOnlineFeatures(entityRowsPerGroup, featureReferencesPerGroup, entityNames);
+    return new GroupFetchResult(featureReferencesPerGroup, featuresPerGroup);
   }
 
   private void populateOnDemandFeatures(

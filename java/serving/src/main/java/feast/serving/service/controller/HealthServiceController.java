@@ -46,11 +46,11 @@ public class HealthServiceController extends HealthImplBase {
     // Implement similarly for batch service.
 
     try {
-      log.info("checking 1244");
       servingService.getFeastServingInfo(GetFeastServingInfoRequest.getDefaultInstance());
       responseObserver.onNext(
           HealthCheckResponse.newBuilder().setStatus(ServingStatus.SERVING).build());
     } catch (Exception e) {
+      log.warn("Health check failed", e);
       responseObserver.onNext(
           HealthCheckResponse.newBuilder().setStatus(ServingStatus.NOT_SERVING).build());
     }

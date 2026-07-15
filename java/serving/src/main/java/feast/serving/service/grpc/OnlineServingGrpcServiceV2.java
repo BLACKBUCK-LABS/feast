@@ -22,6 +22,8 @@ import feast.proto.serving.ServingServiceGrpc;
 import feast.serving.service.ServingServiceV2;
 import io.grpc.Status;
 import io.grpc.stub.StreamObserver;
+import java.util.HashMap;
+import java.util.Map;
 import javax.inject.Inject;
 import org.slf4j.Logger;
 
@@ -49,10 +51,13 @@ public class OnlineServingGrpcServiceV2 extends ServingServiceGrpc.ServingServic
     }
   }
 
+  private static final long SLOW_REQUEST_THRESHOLD_MS = 500;
+
   @Override
   public void getOnlineFeatures(
       ServingAPIProto.GetOnlineFeaturesRequest request,
       StreamObserver<ServingAPIProto.GetOnlineFeaturesResponse> responseObserver) {
+    long startNs = System.nanoTime();
     try {
       int entityCount = request.getEntitiesMap().isEmpty() ? 0
           : request.getEntitiesMap().values().iterator().next().getValCount();
@@ -60,7 +65,23 @@ public class OnlineServingGrpcServiceV2 extends ServingServiceGrpc.ServingServic
       NewRelic.addCustomParameter("feature_service", request.getFeatureService());
       NewRelic.addCustomParameter("features_requested", request.getFeatures().getValCount());
 
-      responseObserver.onNext(this.servingServiceV2.getOnlineFeatures(request));
+      ServingAPIProto.GetOnlineFeaturesResponse response = this.servingServiceV2.getOnlineFeatures(request);
+
+      long totalMs = (System.nanoTime() - startNs) / 1_000_000;
+      NewRelic.addCustomParameter("total_ms", totalMs);
+
+      if (totalMs >= SLOW_REQUEST_THRESHOLD_MS) {
+        Map<String, Object> slowEvent = new HashMap<>();
+        slowEvent.put("feature_service", request.getFeatureService());
+        slowEvent.put("entity_count", entityCount);
+        slowEvent.put("features_requested", request.getFeatures().getValCount());
+        slowEvent.put("total_ms", totalMs);
+        NewRelic.getAgent().getInsights().recordCustomEvent("SlowFeatureRequest", slowEvent);
+        log.warn("SLOW_REQUEST feature_service={} entity_count={} total_ms={}",
+            request.getFeatureService(), entityCount, totalMs);
+      }
+
+      responseObserver.onNext(response);
       responseObserver.onCompleted();
     } catch (RuntimeException e) {
       log.warn("Failed to get Online Features", e);

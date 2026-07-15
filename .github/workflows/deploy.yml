@@ -1,0 +1,71 @@
+name: Deploy Feast Serving (rolling, 4 boxes)
+
+# On push to SRP_MO_integration:
+#   box-1 -> box-2 -> box-3 -> box-4, strictly sequential via `needs` chaining.
+#   Each box: SSM in, git reset --hard to the deployed branch, `mvn install` (parent) +
+#   `mvn package` (serving) ON THE BOX itself (matches the manual steps already run there —
+#   no build artifact is shipped between runner and boxes), supervisor restart, then poll
+#   grpc.health.v1.Health/Check until SERVING before the next box starts.
+# WARNING: this is a rolling deploy across 4 boxes serving live traffic. A broken build/config
+# will fail health-gating on box-1 and the workflow stops there — boxes 2-4 stay on the old
+# version. Confirm box-1 looks right (traffic, logs) before manually re-running for a stuck job.
+
+on:
+  push:
+    branches: [SRP_MO_integration]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  box-1:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v5
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+      - name: Deploy + health-gate box 1
+        run: .github/deploy/deploy-one.sh "${{ secrets.FEAST_INSTANCE_ID_1 }}" "${{ github.ref_name }}"
+
+  box-2:
+    needs: box-1
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v5
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+      - name: Deploy + health-gate box 2
+        run: .github/deploy/deploy-one.sh "${{ secrets.FEAST_INSTANCE_ID_2 }}" "${{ github.ref_name }}"
+
+  box-3:
+    needs: box-2
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v5
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+      - name: Deploy + health-gate box 3
+        run: .github/deploy/deploy-one.sh "${{ secrets.FEAST_INSTANCE_ID_3 }}" "${{ github.ref_name }}"
+
+  box-4:
+    needs: box-3
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v5
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+      - name: Deploy + health-gate box 4
+        run: .github/deploy/deploy-one.sh "${{ secrets.FEAST_INSTANCE_ID_4 }}" "${{ github.ref_name }}"
