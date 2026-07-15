@@ -48,6 +48,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -70,6 +71,10 @@ public class OnlineServingServiceV2 implements ServingServiceV2 {
   public static final String DUMMY_ENTITY_VAL = "";
   public static final ValueProto.Value DUMMY_ENTITY_VALUE =
       ValueProto.Value.newBuilder().setStringVal(DUMMY_ENTITY_VAL).build();
+
+  // 1-in-N sampling for the per-request REQUEST log line - full breakdown for every request
+  // floods the file at real QPS, this keeps a representative sample.
+  private static final int REQUEST_LOG_SAMPLE_RATE = 100;
 
   // Fans out the per-join-key-group Redis fetches in retrieveFeatures() so N groups take
   // max(latency) instead of sum(latency). Separate from the gRPC dispatch executor in
@@ -233,14 +238,19 @@ public class OnlineServingServiceV2 implements ServingServiceV2 {
     NewRelic.addCustomParameter("stale_count", totalStale);
     NewRelic.addCustomParameter("redis_ms", redisMs);
     NewRelic.addCustomParameter("feature_view_count", distinctFvCount);
-    log.info(
-        "REQUEST feature_service={} entities={} feature_view_count={} redis_ms={} not_found={} stale={}",
-        request.getFeatureService(),
-        entityRows.size(),
-        distinctFvCount,
-        redisMs,
-        totalNotFound,
-        totalStale);
+    // Sampled, not per-request: at real QPS logging every request drowns the file. This still
+    // gives a representative sample of the redis_ms/total_ms split for debugging typical
+    // latency, without the volume. SLOW_REQUEST (gRPC layer) logs unconditionally regardless.
+    if (ThreadLocalRandom.current().nextInt(REQUEST_LOG_SAMPLE_RATE) == 0) {
+      log.info(
+          "REQUEST feature_service={} entities={} feature_view_count={} redis_ms={} not_found={} stale={}",
+          request.getFeatureService(),
+          entityRows.size(),
+          distinctFvCount,
+          redisMs,
+          totalNotFound,
+          totalStale);
+    }
 
     if (postProcessingSpan != null) {
       postProcessingSpan.finish();

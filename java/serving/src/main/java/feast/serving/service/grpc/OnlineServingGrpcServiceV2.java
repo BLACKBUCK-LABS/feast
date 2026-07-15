@@ -69,8 +69,6 @@ public class OnlineServingGrpcServiceV2 extends ServingServiceGrpc.ServingServic
 
       long totalMs = (System.nanoTime() - startNs) / 1_000_000;
       NewRelic.addCustomParameter("total_ms", totalMs);
-      log.info("REQUEST_DONE feature_service={} entity_count={} total_ms={}",
-          request.getFeatureService(), entityCount, totalMs);
 
       if (totalMs >= SLOW_REQUEST_THRESHOLD_MS) {
         Map<String, Object> slowEvent = new HashMap<>();
