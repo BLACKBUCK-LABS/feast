@@ -233,6 +233,14 @@ public class OnlineServingServiceV2 implements ServingServiceV2 {
     NewRelic.addCustomParameter("stale_count", totalStale);
     NewRelic.addCustomParameter("redis_ms", redisMs);
     NewRelic.addCustomParameter("feature_view_count", distinctFvCount);
+    log.info(
+        "REQUEST feature_service={} entities={} feature_view_count={} redis_ms={} not_found={} stale={}",
+        request.getFeatureService(),
+        entityRows.size(),
+        distinctFvCount,
+        redisMs,
+        totalNotFound,
+        totalStale);
 
     if (postProcessingSpan != null) {
       postProcessingSpan.finish();

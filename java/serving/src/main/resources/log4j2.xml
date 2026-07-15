@@ -10,21 +10,22 @@
         <!-- App logs and errors both land here as one JSON-per-line stream; error-only
              view is a jq/grep filter on level, not a second file, so nothing needs a
              second rotation policy to stay in sync. -->
+        <!-- Every request now logs at INFO (not just slow/error ones), so volume is much
+             higher than a warn-only stream - roll small and often, keep a short window. -->
         <RollingFile name="appLog"
                      fileName="${basePath}/feast-serving.log"
-                     filePattern="${basePath}/archive/feast-serving-%d{yyyy-MM-dd}-%i.log.gz">
+                     filePattern="${basePath}/archive/feast-serving-%d{yyyy-MM-dd-HH}-%i.log.gz">
             <PatternLayout pattern="${JSON_LOG_PATTERN}"/>
             <Policies>
                 <TimeBasedTriggeringPolicy interval="1" modulate="true"/>
-                <SizeBasedTriggeringPolicy size="100MB"/>
+                <SizeBasedTriggeringPolicy size="20MB"/>
             </Policies>
-            <DefaultRolloverStrategy max="20">
+            <DefaultRolloverStrategy max="200">
                 <Delete basePath="${basePath}/archive" maxDepth="1">
                     <IfFileName glob="feast-serving-*.log.gz"/>
-                    <IfLastModified age="14d"/>
                     <IfAny>
-                        <IfAccumulatedFileSize exceeds="5GB"/>
-                        <IfLastModified age="14d"/>
+                        <IfAccumulatedFileSize exceeds="2GB"/>
+                        <IfLastModified age="3d"/>
                     </IfAny>
                 </Delete>
             </DefaultRolloverStrategy>
