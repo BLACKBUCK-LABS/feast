@@ -60,11 +60,21 @@ CMD_ID=$(aws ssm send-command \
   --document-name "AWS-RunShellScript" \
   --comment "deploy feast-serving ${GITHUB_SHA:-manual}" \
   --parameters "${PARAMS}" \
-  --timeout-seconds 600 \
+  --timeout-seconds 1800 \
   --query "Command.CommandId" --output text)
 echo "SSM Command ID: ${CMD_ID}"
 
-aws ssm wait command-executed --command-id "${CMD_ID}" --instance-id "${INSTANCE_ID}" || true
+# The CLI's built-in `command-executed` waiter gives up after ~100s (5s delay x 20 attempts),
+# far short of a cold-cache Maven build. Poll manually up to the SSM command timeout instead.
+echo "=== Waiting for command to finish (up to 30 min) ==="
+for i in $(seq 1 180); do
+  CUR_STATUS=$(aws ssm get-command-invocation --command-id "${CMD_ID}" --instance-id "${INSTANCE_ID}" \
+    --query "Status" --output text 2>/dev/null || echo "Pending")
+  case "${CUR_STATUS}" in
+    Success|Failed|Cancelled|TimedOut) break ;;
+  esac
+  sleep 10
+done
 
 echo "=== Output from ${INSTANCE_ID} ==="
 aws ssm get-command-invocation --command-id "${CMD_ID}" --instance-id "${INSTANCE_ID}" \
