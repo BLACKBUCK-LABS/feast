@@ -24,8 +24,22 @@ git fetch origin "${BRANCH}"
 git checkout "${BRANCH}"
 git reset --hard "origin/${BRANCH}"
 
-mvn -f java/pom.xml install -Dmaven.test.skip=true
-mvn -f java/serving/pom.xml package -Dmaven.test.skip=true
+# System mvn is 3.3.9 here, but the enforcer plugin (maven-enforcer-plugin) requires >=3.6.
+# apache-maven-3.8.7-bin.tar.gz sits next to the repo for exactly that reason - unpack once if
+# needed, then use it explicitly instead of relying on PATH.
+MAVEN_HOME_DIR="${REPO_DIR}/apache-maven-3.8.7"
+if [ ! -x "\${MAVEN_HOME_DIR}/bin/mvn" ] && [ -f "${REPO_DIR}/apache-maven-3.8.7-bin.tar.gz" ]; then
+  tar -xzf "${REPO_DIR}/apache-maven-3.8.7-bin.tar.gz" -C "${REPO_DIR}"
+fi
+MVN="\${MAVEN_HOME_DIR}/bin/mvn"
+if [ ! -x "\${MVN}" ]; then
+  echo "apache-maven-3.8.7 not found/unpacked - falling back to system mvn"
+  MVN="mvn"
+fi
+echo "Using \$("\${MVN}" -version | head -1)"
+
+"\${MVN}" -f java/pom.xml install -Dmaven.test.skip=true
+"\${MVN}" -f java/serving/pom.xml package -Dmaven.test.skip=true
 
 sudo supervisorctl restart ${SUPERVISOR_PROGRAM}
 
