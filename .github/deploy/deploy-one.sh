@@ -66,6 +66,13 @@ echo "Build succeeded (full log at \${BUILD_LOG} on the box)"
 
 sudo supervisorctl restart ${SUPERVISOR_PROGRAM}
 
+# grpcurl isn't preinstalled on these boxes - install once, idempotent on every later deploy.
+if ! command -v grpcurl >/dev/null 2>&1; then
+  echo "grpcurl not found - installing"
+  curl -sSL https://github.com/fullstorydev/grpcurl/releases/download/v1.9.1/grpcurl_1.9.1_linux_x86_64.tar.gz \
+    | sudo tar -xz -C /usr/local/bin grpcurl
+fi
+
 # Health gate: poll up to ~150s via the gRPC health-checking protocol. The app reloads the
 # registry + reconnects to Redis on boot, so grpcurl returning "connection refused" for the
 # first several iterations is expected, NOT a failure. errexit/pipefail are disabled for the
