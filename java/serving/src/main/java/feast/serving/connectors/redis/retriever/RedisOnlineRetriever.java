@@ -44,8 +44,13 @@ public class RedisOnlineRetriever implements OnlineRetriever {
   private final EntityKeySerializer keySerializer;
   private final String project;
 
-  // Number of fields in request to Redis which requires using HGETALL instead of HMGET
-  public static final int HGETALL_NUMBER_OF_FIELDS_THRESHOLD = 50;
+  // Number of fields in request to Redis which requires using HGETALL instead of HMGET.
+  // Kept high on purpose: HMGET transfers only the requested fields (absent ones come back
+  // as cheap nulls), while HGETALL returns the ENTIRE hash - for entity keys shared by many
+  // feature views that's strictly more network bytes and decode work than the request needs.
+  // The upstream value of 50 was tuned on a different workload; here HGETALL only wins for
+  // pathological field counts.
+  public static final int HGETALL_NUMBER_OF_FIELDS_THRESHOLD = 500;
 
   public RedisOnlineRetriever(
       String project, RedisClientAdapter redisClientAdapter, EntityKeySerializer keySerializer) {
@@ -98,11 +103,14 @@ public class RedisOnlineRetriever implements OnlineRetriever {
               retrieveFields.add(featureTableTsBytes);
             });
 
-    List<CompletableFuture<Map<byte[], byte[]>>> futures =
+    // Decode is chained into each future via thenApplyAsync so each entity row is decoded as
+    // soon as its Redis response lands - in parallel, off the netty event loop (thenApply here
+    // would run the collect/decode on the I/O thread and delay other in-flight responses), and
+    // NOT on the group-fetch executor (its threads block on allOf below; queueing decode stages
+    // behind them on the same bounded pool could deadlock). Default async executor = common pool.
+    List<CompletableFuture<List<Feature>>> futures =
         Lists.newArrayListWithExpectedSize(binaryRedisKeys.size());
 
-    // Number of fields that controls whether to use hmget or hgetall was discovered empirically
-    // Could be potentially tuned further
     if (retrieveFields.size() < HGETALL_NUMBER_OF_FIELDS_THRESHOLD) {
       byte[][] retrieveFieldsByteArray = retrieveFields.toArray(new byte[0][]);
 
@@ -110,16 +118,27 @@ public class RedisOnlineRetriever implements OnlineRetriever {
         futures.add(
             redisClientAdapter
                 .hmget(binaryRedisKey, retrieveFieldsByteArray)
-                .thenApply(
+                .toCompletableFuture()
+                .thenApplyAsync(
                     list ->
-                        list.stream()
-                            .filter(KeyValue::hasValue)
-                            .collect(Collectors.toMap(KeyValue::getKey, KeyValue::getValue)))
-                .toCompletableFuture());
+                        RedisHashDecoder.retrieveFeature(
+                            list.stream()
+                                .filter(KeyValue::hasValue)
+                                .collect(Collectors.toMap(KeyValue::getKey, KeyValue::getValue)),
+                            byteToFeatureIdxMap,
+                            featureReferences,
+                            timestampPrefix)));
       }
     } else {
       for (byte[] binaryRedisKey : binaryRedisKeys) {
-        futures.add(redisClientAdapter.hgetall(binaryRedisKey).toCompletableFuture());
+        futures.add(
+            redisClientAdapter
+                .hgetall(binaryRedisKey)
+                .toCompletableFuture()
+                .thenApplyAsync(
+                    map ->
+                        RedisHashDecoder.retrieveFeature(
+                            map, byteToFeatureIdxMap, featureReferences, timestampPrefix)));
       }
     }
 
@@ -140,10 +159,8 @@ public class RedisOnlineRetriever implements OnlineRetriever {
     }
 
     List<List<Feature>> results = Lists.newArrayListWithExpectedSize(futures.size());
-    for (CompletableFuture<Map<byte[], byte[]>> f : futures) {
-      results.add(
-          RedisHashDecoder.retrieveFeature(
-              f.join(), byteToFeatureIdxMap, featureReferences, timestampPrefix));
+    for (CompletableFuture<List<Feature>> f : futures) {
+      results.add(f.join());
     }
 
     return results;

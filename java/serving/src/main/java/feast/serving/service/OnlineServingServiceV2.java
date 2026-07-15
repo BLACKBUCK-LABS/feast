@@ -80,23 +80,35 @@ public class OnlineServingServiceV2 implements ServingServiceV2 {
   // max(latency) instead of sum(latency). Separate from the gRPC dispatch executor in
   // ServerModule: reusing that pool would let this work compete with RPC dispatch under
   // CallerRunsPolicy and starve request intake during a load spike.
-  private static final ExecutorService fetchExecutor =
-      new ThreadPoolExecutor(
-          Runtime.getRuntime().availableProcessors() * 2,
-          Runtime.getRuntime().availableProcessors() * 8,
-          60L,
-          TimeUnit.SECONDS,
-          new LinkedBlockingQueue<>(2000),
-          new ThreadFactory() {
-            private final AtomicInteger count = new AtomicInteger();
+  //
+  // core == max on purpose: ThreadPoolExecutor only grows past core when the queue is FULL,
+  // so with a 2000-deep queue a smaller core is the real cap - group tasks block on Redis
+  // I/O, and capping in-flight groups at 2xCPU made every other group queue (that wait shows
+  // up inside redis_ms). Threads are I/O-bound, not CPU-bound, so 8xCPU of them is cheap;
+  // allowCoreThreadTimeOut lets them all drain away when idle.
+  private static final ExecutorService fetchExecutor;
 
-            @Override
-            public Thread newThread(Runnable r) {
-              Thread thread = new Thread(r, "feature-group-fetch-" + count.incrementAndGet());
-              thread.setDaemon(true);
-              return thread;
-            }
-          });
+  static {
+    ThreadPoolExecutor executor =
+        new ThreadPoolExecutor(
+            Runtime.getRuntime().availableProcessors() * 8,
+            Runtime.getRuntime().availableProcessors() * 8,
+            60L,
+            TimeUnit.SECONDS,
+            new LinkedBlockingQueue<>(2000),
+            new ThreadFactory() {
+              private final AtomicInteger count = new AtomicInteger();
+
+              @Override
+              public Thread newThread(Runnable r) {
+                Thread thread = new Thread(r, "feature-group-fetch-" + count.incrementAndGet());
+                thread.setDaemon(true);
+                return thread;
+              }
+            });
+    executor.allowCoreThreadTimeOut(true);
+    fetchExecutor = executor;
+  }
 
   public OnlineServingServiceV2(
       OnlineRetriever retriever,
