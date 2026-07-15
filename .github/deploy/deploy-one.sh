@@ -38,8 +38,22 @@ if [ ! -x "\${MVN}" ]; then
 fi
 echo "Using \$("\${MVN}" -version | head -1)"
 
-"\${MVN}" -f java/pom.xml install -Dmaven.test.skip=true
-"\${MVN}" -f java/serving/pom.xml package -Dmaven.test.skip=true
+# SSM truncates StandardOutputContent at 24KB - Maven's per-dependency download progress lines
+# alone blow past that and swallow the actual build result/error. Send full output to a log
+# file on the box; only echo the tail back to SSM stdout, and only on failure.
+BUILD_LOG="/tmp/feast-deploy-build.log"
+: > "\${BUILD_LOG}"
+if ! "\${MVN}" -q -B -f java/pom.xml install -Dmaven.test.skip=true >> "\${BUILD_LOG}" 2>&1; then
+  echo "mvn install FAILED - last 200 lines of \${BUILD_LOG}:"
+  tail -200 "\${BUILD_LOG}"
+  exit 1
+fi
+if ! "\${MVN}" -q -B -f java/serving/pom.xml package -Dmaven.test.skip=true >> "\${BUILD_LOG}" 2>&1; then
+  echo "mvn package FAILED - last 200 lines of \${BUILD_LOG}:"
+  tail -200 "\${BUILD_LOG}"
+  exit 1
+fi
+echo "Build succeeded (full log at \${BUILD_LOG} on the box)"
 
 sudo supervisorctl restart ${SUPERVISOR_PROGRAM}
 
