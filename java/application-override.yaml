@@ -1,0 +1,10 @@
+feast:
+  project: usm
+  registry: /Users/darpan/git/feast/java/registry.db
+  activeStore: online
+  stores:
+    - name: online
+      type: REDIS
+      config:
+        host: mm-semantic-testing-fs.slkos6.clustercfg.aps1.cache.amazonaws.com
+        port: 6379
