@@ -357,6 +357,110 @@ public class OnlineServingServiceTest {
     assertThat(actual, equalTo(expected));
   }
 
+  // Guards the parallel cross-group fetch in retrieveFeatures(): two feature views with
+  // different entities land in different join-key groups and are fetched concurrently on
+  // separate threads. This asserts the merge puts each group's results back at the correct
+  // column index regardless of which thread's future completes first - a regression here
+  // would silently swap feature values between columns while still returning 200 OK.
+  @Test
+  public void shouldMergeMultipleJoinKeyGroupsAtCorrectColumns() {
+    ServingAPIProto.FeatureReferenceV2 fv1Feature1 =
+        ServingAPIProto.FeatureReferenceV2.newBuilder()
+            .setFeatureViewName("featureview_1")
+            .setFeatureName("feature_1")
+            .build();
+    ServingAPIProto.FeatureReferenceV2 fv2Feature1 =
+        ServingAPIProto.FeatureReferenceV2.newBuilder()
+            .setFeatureViewName("featureview_2")
+            .setFeatureName("feature_1")
+            .build();
+    List<ServingAPIProto.FeatureReferenceV2> featureReferences =
+        List.of(fv1Feature1, fv2Feature1);
+    ServingAPIProto.GetOnlineFeaturesRequest request = getOnlineFeaturesRequest(featureReferences);
+
+    FeatureViewProto.FeatureViewSpec fv1Spec =
+        FeatureViewProto.FeatureViewSpec.newBuilder()
+            .setName("featureview_1")
+            .addEntities("entity1")
+            .addFeatures(
+                FeatureProto.FeatureSpecV2.newBuilder()
+                    .setName("feature_1")
+                    .setValueType(ValueProto.ValueType.Enum.STRING)
+                    .build())
+            .setTtl(Duration.newBuilder().setSeconds(3600))
+            .build();
+    FeatureViewProto.FeatureViewSpec fv2Spec =
+        FeatureViewProto.FeatureViewSpec.newBuilder()
+            .setName("featureview_2")
+            .addEntities("entity2")
+            .addFeatures(
+                FeatureProto.FeatureSpecV2.newBuilder()
+                    .setName("feature_1")
+                    .setValueType(ValueProto.ValueType.Enum.STRING)
+                    .build())
+            .setTtl(Duration.newBuilder().setSeconds(3600))
+            .build();
+
+    Feature fv1Row0 =
+        new ProtoFeature(fv1Feature1, now, createStrValue("fv1-row0"));
+    Feature fv1Row1 =
+        new ProtoFeature(fv1Feature1, now, createStrValue("fv1-row1"));
+    Feature fv2Row0 =
+        new ProtoFeature(fv2Feature1, now, createStrValue("fv2-row0"));
+    Feature fv2Row1 =
+        new ProtoFeature(fv2Feature1, now, createStrValue("fv2-row1"));
+
+    // getJoinKeyGroupForFeatureView (called before fan-out, to build the groups) constructs its
+    // own FeatureReferenceV2 with only featureViewName set - match on that field, not object
+    // equality, so both that lookup and fetchGroup's per-group lookup resolve correctly.
+    when(registry.getFeatureViewSpec(any()))
+        .thenAnswer(
+            invocation -> {
+              ServingAPIProto.FeatureReferenceV2 ref = invocation.getArgument(0);
+              return ref.getFeatureViewName().equals("featureview_1") ? fv1Spec : fv2Spec;
+            });
+    when(registry.getFeatureSpec(fv1Feature1)).thenReturn(featureSpecs.get(0));
+    when(registry.getFeatureSpec(fv2Feature1)).thenReturn(featureSpecs.get(0));
+    when(registry.getEntityJoinKey("entity1")).thenReturn("entity1");
+    when(registry.getEntityJoinKey("entity2")).thenReturn("entity2");
+
+    // Distinguish which group a call belongs to by the featureReferences argument, since both
+    // groups now fetch concurrently rather than in a guaranteed call order.
+    when(retrieverV2.getOnlineFeatures(any(), any(), any()))
+        .thenAnswer(
+            invocation -> {
+              List<ServingAPIProto.FeatureReferenceV2> refs = invocation.getArgument(1);
+              if (refs.contains(fv1Feature1)) {
+                return List.of(List.of(fv1Row0), List.of(fv1Row1));
+              }
+              return List.of(List.of(fv2Row0), List.of(fv2Row1));
+            });
+
+    when(tracer.buildSpan(ArgumentMatchers.any())).thenReturn(Mockito.mock(SpanBuilder.class));
+
+    GetOnlineFeaturesResponse actual = onlineServingServiceV2.getOnlineFeatures(request);
+
+    // Column 0 must be featureview_1's values, column 1 must be featureview_2's - never swapped.
+    assertThat(
+        actual.getResults(0).getValues(0).getStringVal(),
+        equalTo("fv1-row0"));
+    assertThat(
+        actual.getResults(0).getValues(1).getStringVal(),
+        equalTo("fv1-row1"));
+    assertThat(
+        actual.getResults(1).getValues(0).getStringVal(),
+        equalTo("fv2-row0"));
+    assertThat(
+        actual.getResults(1).getValues(1).getStringVal(),
+        equalTo("fv2-row1"));
+    assertThat(
+        actual.getMetadata().getFeatureNames().getVal(0),
+        equalTo("featureview_1:feature_1"));
+    assertThat(
+        actual.getMetadata().getFeatureNames().getVal(1),
+        equalTo("featureview_2:feature_1"));
+  }
+
   private FeatureViewProto.FeatureViewSpec getFeatureViewSpec() {
     return FeatureViewProto.FeatureViewSpec.newBuilder()
         .setName("featureview_1")

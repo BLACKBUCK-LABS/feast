@@ -242,14 +242,31 @@ public class OnlineServingServiceV2 implements ServingServiceV2 {
     // gives a representative sample of the redis_ms/total_ms split for debugging typical
     // latency, without the volume. SLOW_REQUEST (gRPC layer) logs unconditionally regardless.
     if (ThreadLocalRandom.current().nextInt(REQUEST_LOG_SAMPLE_RATE) == 0) {
+      // Include one real feature name + its row-0 value/status - confirms actual feature data is
+      // flowing through the response, not just that not_found/stale counts look plausible.
+      String sampleFeature = "n/a";
+      String sampleValue = "n/a";
+      String sampleStatus = "n/a";
+      if (!responseBuilder.getResultsList().isEmpty()
+          && responseBuilder.getResults(0).getValuesCount() > 0) {
+        sampleFeature =
+            responseBuilder.getMetadata().getFeatureNames().getValCount() > 0
+                ? responseBuilder.getMetadata().getFeatureNames().getVal(0)
+                : "n/a";
+        sampleStatus = responseBuilder.getResults(0).getStatuses(0).name();
+        sampleValue = responseBuilder.getResults(0).getValues(0).getValCase().name();
+      }
       log.info(
-          "REQUEST feature_service={} entities={} feature_view_count={} redis_ms={} not_found={} stale={}",
+          "REQUEST feature_service={} entities={} feature_view_count={} redis_ms={} not_found={} stale={} sample_feature={} sample_status={} sample_value_type={}",
           request.getFeatureService(),
           entityRows.size(),
           distinctFvCount,
           redisMs,
           totalNotFound,
-          totalStale);
+          totalStale,
+          sampleFeature,
+          sampleStatus,
+          sampleValue);
     }
 
     if (postProcessingSpan != null) {
