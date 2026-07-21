@@ -6,7 +6,7 @@ feast:
     - name: online_cluster
       type: REDIS_CLUSTER
       config: # Store specific configuration.
-        connection_string: "marketplace-fs-mo-v1.slkos6.clustercfg.aps1.cache.amazonaws.com:6379"
+        connection_string: "marketplace-fs-mo.slkos6.clustercfg.aps1.cache.amazonaws.com:6379"
         read_from: MASTER
         timeout: PT2S
 logging:
