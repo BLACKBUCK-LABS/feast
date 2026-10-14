@@ -48,11 +48,14 @@ public class ServerModule extends AbstractModule {
 
         int coreThreads = Runtime.getRuntime().availableProcessors() * 2;
         int maxThreads = coreThreads * 4;
+        // The pool only grows past coreThreads once this queue is full. At 2000 it never filled (peak-hour
+        // queue: p50 11, p99 73, max 130), so the pool stayed at coreThreads; at 32 it grows under real bursts.
+        int queueCapacity = 32;
         ExecutorService executorService = new ThreadPoolExecutor(
                 coreThreads,
                 maxThreads,
                 60L, TimeUnit.SECONDS,
-                new LinkedBlockingQueue<>(2000),
+                new LinkedBlockingQueue<>(queueCapacity),
                 new ThreadPoolExecutor.CallerRunsPolicy());
 
         logThreadPoolDetails(executorService);
