@@ -1,14 +1,15 @@
-name: Deploy Feast Serving (rolling, 4 boxes)
+name: Deploy Feast Serving (rolling, all boxes)
 
 # On push to SRP_MO_integration:
-#   box-1 -> box-2 -> box-3 -> box-4, strictly sequential via `needs` chaining.
+#   Deploys to every repo secret named FEAST_INSTANCE_ID_<n>, in numeric order, strictly one at a
+#   time. To add a box: add secret FEAST_INSTANCE_ID_<next n>. No workflow edit needed.
 #   Each box: SSM in, git reset --hard to the deployed branch, `mvn install` (parent) +
 #   `mvn package` (serving) ON THE BOX itself (matches the manual steps already run there —
 #   no build artifact is shipped between runner and boxes), supervisor restart, then poll
 #   grpc.health.v1.Health/Check until SERVING before the next box starts.
-# WARNING: this is a rolling deploy across 4 boxes serving live traffic. A broken build/config
-# will fail health-gating on box-1 and the workflow stops there — boxes 2-4 stay on the old
-# version. Confirm box-1 looks right (traffic, logs) before manually re-running for a stuck job.
+# WARNING: this is a rolling deploy across all boxes serving live traffic. A broken build/config
+# will fail health-gating on the first box and the loop stops there — remaining boxes stay on the
+# old version. Confirm the first box looks right (traffic, logs) before re-running.
 
 on:
   push:
@@ -19,8 +20,10 @@ permissions:
   contents: read
 
 jobs:
-  box-1:
+  deploy:
     runs-on: ubuntu-latest
+    # Worst case ~30 min per box (SSM timeout in deploy-one.sh); leave room for many boxes.
+    timeout-minutes: 360
     steps:
       - uses: actions/checkout@v4
       - uses: aws-actions/configure-aws-credentials@v5
@@ -28,44 +31,38 @@ jobs:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ secrets.AWS_REGION }}
-      - name: Deploy + health-gate box 1
-        run: .github/deploy/deploy-one.sh "${{ secrets.FEAST_INSTANCE_ID_1 }}" "${{ github.ref_name }}"
-
-  box-2:
-    needs: box-1
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: aws-actions/configure-aws-credentials@v5
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ secrets.AWS_REGION }}
-      - name: Deploy + health-gate box 2
-        run: .github/deploy/deploy-one.sh "${{ secrets.FEAST_INSTANCE_ID_2 }}" "${{ github.ref_name }}"
-
-  box-3:
-    needs: box-2
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: aws-actions/configure-aws-credentials@v5
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ secrets.AWS_REGION }}
-      - name: Deploy + health-gate box 3
-        run: .github/deploy/deploy-one.sh "${{ secrets.FEAST_INSTANCE_ID_3 }}" "${{ github.ref_name }}"
-
-  box-4:
-    needs: box-3
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: aws-actions/configure-aws-credentials@v5
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ secrets.AWS_REGION }}
-      - name: Deploy + health-gate box 4
-        run: .github/deploy/deploy-one.sh "${{ secrets.FEAST_INSTANCE_ID_4 }}" "${{ github.ref_name }}"
+      - name: Rolling deploy + health-gate each box
+        env:
+          # Actions can't enumerate secrets by prefix; toJSON(secrets) is the only way to discover
+          # FEAST_INSTANCE_ID_* dynamically. Only this step sees it, and only the instance IDs are
+          # extracted below.
+          ALL_SECRETS: ${{ toJSON(secrets) }}
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          mapfile -t KEYS < <(printf '%s' "$ALL_SECRETS" \
+            | jq -r 'keys[] | select(test("^FEAST_INSTANCE_ID_[0-9]+$"))' \
+            | sort -t_ -k4 -n)
+          if [ "${#KEYS[@]}" -eq 0 ]; then
+            echo "::error::No FEAST_INSTANCE_ID_<n> secrets found"
+            exit 1
+          fi
+          echo "Deploying to ${#KEYS[@]} box(es): ${KEYS[*]}"
+          # Pull out only the instance IDs, then drop the full secrets blob from the environment
+          # so deploy-one.sh / aws / curl never inherit it.
+          IDS=()
+          for KEY in "${KEYS[@]}"; do
+            ID=$(printf '%s' "$ALL_SECRETS" | jq -r --arg k "$KEY" '.[$k]')
+            if [ -z "$ID" ] || [ "$ID" = "null" ]; then
+              echo "::error::Secret ${KEY} is empty"
+              exit 1
+            fi
+            echo "::add-mask::${ID}"
+            IDS+=("$ID")
+          done
+          unset ALL_SECRETS
+          for i in "${!KEYS[@]}"; do
+            echo "::group::${KEYS[$i]}"
+            .github/deploy/deploy-one.sh "${IDS[$i]}" "$BRANCH"
+            echo "::endgroup::"
+          done
