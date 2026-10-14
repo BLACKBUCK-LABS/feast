@@ -49,8 +49,10 @@ public class ServerModule extends AbstractModule {
         int coreThreads = Runtime.getRuntime().availableProcessors() * 2;
         int maxThreads = coreThreads * 4;
         // The pool only grows past coreThreads once this queue is full. At 2000 it never filled (peak-hour
-        // queue: p50 11, p99 73, max 130), so the pool stayed at coreThreads; at 32 it grows under real bursts.
-        int queueCapacity = 32;
+        // queue: p50 11, p99 73, max 130), so the pool stayed at coreThreads; at 40 it grows under real bursts.
+        // 40 queued + 32 running = 72 in flight before CallerRunsPolicy, above the ~66 per box that
+        // MatchMaker can send at once (4 boxes x 80 async threads, spread over 5 Feast boxes).
+        int queueCapacity = 40;
         ExecutorService executorService = new ThreadPoolExecutor(
                 coreThreads,
                 maxThreads,
